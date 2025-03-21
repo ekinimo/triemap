@@ -1,6 +1,5 @@
 use std::iter::FromIterator;
 
-use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
 /// A mutable iterator over the values of a `TrieMap`.
@@ -3306,7 +3305,7 @@ mod tests {
         assert!(trie.is_empty());
     }
 
-    use super::*;
+    
 
     #[test]
     fn test_entry_or_insert() {
