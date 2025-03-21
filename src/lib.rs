@@ -1,4 +1,3 @@
-use std::hash::DefaultHasher;
 use std::iter::FromIterator;
 
 use std::borrow::Borrow;
@@ -2845,6 +2844,7 @@ impl<const N: usize> AsBytes for [u8; N] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::hash::DefaultHasher;
     #[test]
     fn test_iter_mut() {
         let mut trie = TrieMap::new();
