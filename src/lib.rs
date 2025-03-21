@@ -4,7 +4,89 @@ use std::iter::FromIterator;
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
-/// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for efficient storage
+/// A mutable iterator over the values of a `TrieMap`.
+///
+/// This struct is created by the [`values_mut`] method on [`TrieMap`].
+///
+/// [`values_mut`]: TrieMap::values_mut
+pub struct ValuesMut<'a, T> {
+    trie: &'a mut TrieMap<T>,
+    indices: Vec<usize>,
+    position: usize,
+}
+
+impl<'a, T> Iterator for ValuesMut<'a, T> {
+    type Item = &'a mut T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position < self.indices.len() {
+            let idx = self.indices[self.position];
+            self.position += 1;
+
+            // We know this is valid because we collected valid indices
+            if let Some(ref mut value) = self.trie.data[idx] {
+                // We need to convert this mutable reference to one with the right lifetime
+                // This is safe because we only return each index once and indices are unique
+                let value_ptr = value as *mut T;
+                Some(unsafe { &mut *value_ptr })
+            } else {
+                // This should not happen in normal operation, but handle it just in case
+                self.next()
+            }
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.indices.len() - self.position;
+        (remaining, Some(remaining))
+    }
+}
+
+/// A mutable iterator over the key-value pairs of a `TrieMap`.
+///
+/// This struct is created by the [`iter_mut`] method on [`TrieMap`].
+///
+/// [`iter_mut`]: TrieMap::iter_mut
+pub struct IterMut<'a, T> {
+    trie: &'a mut TrieMap<T>,
+    keys_indices: Vec<(Vec<u8>, usize)>,
+    position: usize,
+}
+
+impl<'a, T> Iterator for IterMut<'a, T> {
+    type Item = (Vec<u8>, &'a mut T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position < self.keys_indices.len() {
+            let (key, idx) = &self.keys_indices[self.position];
+            self.position += 1;
+
+            let key_clone = key.clone();
+
+            // We know this is valid because we collected valid indices
+            if let Some(ref mut value) = self.trie.data[*idx] {
+                // We need to convert this mutable reference to one with the right lifetime
+                // This is safe because we only return each index once and indices are unique
+                let value_ptr = value as *mut T;
+                Some((key_clone, unsafe { &mut *value_ptr }))
+            } else {
+                // This should not happen in normal operation, but handle it just in case
+                self.next()
+            }
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.keys_indices.len() - self.position;
+        (remaining, Some(remaining))
+    }
+}
+
+/// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
 ///
 /// # Features
@@ -853,6 +935,93 @@ impl<'a, T> Iterator for PrefixValues<'a, T> {
 }
 
 impl<T> TrieMap<T> {
+    /// Returns a mutable iterator over the key-value pairs of the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for (key, value) in map.iter_mut() {
+    ///     *value += 10;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&11));
+    /// assert_eq!(map.get("b"), Some(&12));
+    /// ```
+    pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a, T> {
+        let mut keys_indices = Vec::with_capacity(self.size);
+        let mut current_key = Vec::new();
+
+        Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
+
+        IterMut {
+            trie: self,
+            keys_indices,
+            position: 0,
+        }
+    }
+
+    /// Private helper to collect all keys and their associated data indices
+    fn collect_keys_indices(
+        node: &TrieNode,
+        current_key: &mut Vec<u8>,
+        keys_indices: &mut Vec<(Vec<u8>, usize)>,
+    ) {
+        if let Some(idx) = node.data_idx {
+            keys_indices.push((current_key.clone(), idx));
+        }
+
+        for byte in 0..=255u8 {
+            if test_bit(&node.is_present, byte) {
+                let idx = popcount(&node.is_present, byte) as usize;
+
+                if idx < node.children.len() {
+                    current_key.push(byte);
+                    Self::collect_keys_indices(&node.children[idx], current_key, keys_indices);
+                    current_key.pop();
+                }
+            }
+        }
+    }
+
+    /// Returns a mutable iterator over the values of the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for value in map.values_mut() {
+    ///     *value *= 2;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// assert_eq!(map.get("b"), Some(&4));
+    /// ```
+    pub fn values_mut<'a>(&'a mut self) -> ValuesMut<'a, T> {
+        // Collect indices of all values
+        let mut indices = Vec::with_capacity(self.size);
+
+        for i in 0..self.data.len() {
+            if self.data[i].is_some() {
+                indices.push(i);
+            }
+        }
+
+        ValuesMut {
+            trie: self,
+            indices,
+            position: 0,
+        }
+    }
+
     /// Returns an iterator over all key-value pairs with keys that start with the given prefix.
     ///
     /// # Examples
@@ -1105,11 +1274,9 @@ impl<T> TrieMap<T> {
     pub fn symmetric_difference(self, other: TrieMap<T>) -> TrieMap<T> {
         let mut result = TrieMap::new();
 
-        // Step 1: Collect keys from both maps
         let self_keys: Vec<Vec<u8>> = self.keys().collect();
         let other_keys: Vec<Vec<u8>> = other.keys().collect();
 
-        // Step 2: Create a hashmap to track common keys efficiently
         use std::collections::HashSet;
         let mut common_keys = HashSet::new();
 
@@ -1119,7 +1286,6 @@ impl<T> TrieMap<T> {
             }
         }
 
-        // Step 3: Process both maps
         for (key, value) in self.into_iter() {
             if !common_keys.contains(&key) {
                 result.insert(key, value);
@@ -2679,6 +2845,61 @@ impl<const N: usize> AsBytes for [u8; N] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn test_iter_mut() {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+        trie.insert("b", 2);
+        trie.insert("c", 3);
+
+        for (_, value) in trie.iter_mut() {
+            *value *= 10;
+        }
+
+        assert_eq!(trie.get("a"), Some(&10));
+        assert_eq!(trie.get("b"), Some(&20));
+        assert_eq!(trie.get("c"), Some(&30));
+    }
+
+    #[test]
+    fn test_values_mut() {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+        trie.insert("b", 2);
+        trie.insert("c", 3);
+
+        let mut sum = 0;
+        for value in trie.values_mut() {
+            sum += *value;
+            *value += 5;
+        }
+
+        assert_eq!(sum, 6);
+        assert_eq!(trie.get("a"), Some(&6));
+        assert_eq!(trie.get("b"), Some(&7));
+        assert_eq!(trie.get("c"), Some(&8));
+    }
+
+    #[test]
+    fn test_iter_mut_modification_during_iteration() {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+        trie.insert("b", 2);
+        trie.insert("c", 3);
+
+        // Make sure we can modify values based on key content
+        for (key, value) in trie.iter_mut() {
+            if String::from_utf8_lossy(&key) == "b" {
+                *value *= 100;
+            } else {
+                *value *= 10;
+            }
+        }
+
+        assert_eq!(trie.get("a"), Some(&10));
+        assert_eq!(trie.get("b"), Some(&200));
+        assert_eq!(trie.get("c"), Some(&30));
+    }
 
     #[test]
     fn test_prefix_iterators() {
