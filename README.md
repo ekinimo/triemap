@@ -10,6 +10,10 @@ A Rust implementation of a map data structure backed by a trie (prefix tree).
 - Full iterator support
 - Entry API for in-place updates
 
+## Documentation
+
+Full API documentation is available at: https://ekinimo.github.io/triemap/
+
 ## Usage
 
 Add to your `Cargo.toml`:
