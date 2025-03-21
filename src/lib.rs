@@ -585,34 +585,13 @@ fn popcount(a: &[u64; 4], k: u8) -> u16 {
 ///
 /// It provides a method to convert the type to a byte slice.
 ///
-/// # Examples
-///
-/// ```
-/// use triemap::{TrieMap, AsBytes};
-///
-/// struct UserId(u64);
-///
-/// impl AsBytes for UserId {
-///     fn as_bytes(&self) -> &[u8] {
-///         // Use the id's byte representation as the key
-///         unsafe {
-///             std::slice::from_raw_parts(
-///                 &self.0 as *const u64 as *const u8,
-///                 std::mem::size_of::<u64>()
-///             )
-///         }
-///     }
-/// }
-///
-/// let mut map = TrieMap::new();
-/// map.insert(UserId(1), "Alice");
-/// map.insert(UserId(2), "Bob");
-///
-/// assert_eq!(map.get(&UserId(1)), Some(&"Alice"));
-/// ```
 pub trait AsBytes {
     /// Converts the value to a byte slice.
     fn as_bytes(&self) -> &[u8];
+
+    fn as_bytes_vec(&self) -> Vec<u8> {
+        self.as_bytes().into()
+    }
 }
 
 impl AsBytes for [u8] {
@@ -914,166 +893,14 @@ impl<T> TrieMap<T> {
         }
     }
 
-    /// Returns a new map containing only the entries whose keys are present in both maps.
-    ///
-    /// The values from this map are used for the result.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    /// map1.insert("c", 3);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("c", 30);
-    /// map2.insert("d", 40);
-    ///
-    /// let intersection = map1.intersect(map2);
-    /// assert_eq!(intersection.len(), 2);
-    /// assert_eq!(intersection.get("b"), Some(&2)); // Values from map1
-    /// assert_eq!(intersection.get("c"), Some(&3));
-    /// assert!(!intersection.contains_key("a"));
-    /// assert!(!intersection.contains_key("d"));
-    /// ```
-    pub fn intersect(self, other: TrieMap<T>) -> TrieMap<T> {
-        let mut result = TrieMap::new();
-
-        for (key, value) in self.into_iter() {
-            if other.contains_key(&key) {
-                result.insert(key, value);
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing only the entries whose keys are present in both maps.
-    /// This version takes references and clones values.
-    ///
-    /// The values from this map are used for the result.
+    /// Returns an iterator over entries from both maps, preferring values from this map
+    /// when keys exist in both maps.
     ///
     /// # Examples
     ///
     /// ```
     /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    /// map1.insert("c", 3);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("c", 30);
-    /// map2.insert("d", 40);
-    ///
-    /// let intersection = map1.intersect_ref(&map2);
-    /// assert_eq!(intersection.len(), 2);
-    /// assert_eq!(intersection.get("b"), Some(&2)); // Values from map1
-    /// assert_eq!(intersection.get("c"), Some(&3));
-    /// assert!(!intersection.contains_key("a"));
-    /// assert!(!intersection.contains_key("d"));
-    /// ```
-    pub fn intersect_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
-    where
-        T: Clone,
-    {
-        let mut result = TrieMap::new();
-
-        for (key, value) in self.iter() {
-            if other.contains_key(&key) {
-                result.insert(key, value.clone());
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing the entries whose keys are in this map but not in the other map.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    /// map1.insert("c", 3);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("d", 40);
-    ///
-    /// let difference = map1.difference(map2);
-    /// assert_eq!(difference.len(), 2);
-    /// assert_eq!(difference.get("a"), Some(&1));
-    /// assert_eq!(difference.get("c"), Some(&3));
-    /// assert!(!difference.contains_key("b"));
-    /// assert!(!difference.contains_key("d"));
-    /// ```
-    pub fn difference(self, other: TrieMap<T>) -> TrieMap<T> {
-        let mut result = TrieMap::new();
-
-        for (key, value) in self.into_iter() {
-            if !other.contains_key(&key) {
-                result.insert(key, value);
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing the entries whose keys are in this map but not in the other map.
-    /// This version takes references and clones values.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    /// map1.insert("c", 3);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("d", 40);
-    ///
-    /// let difference = map1.difference_ref(&map2);
-    /// assert_eq!(difference.len(), 2);
-    /// assert_eq!(difference.get("a"), Some(&1));
-    /// assert_eq!(difference.get("c"), Some(&3));
-    /// assert!(!difference.contains_key("b"));
-    /// assert!(!difference.contains_key("d"));
-    /// ```
-    pub fn difference_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
-    where
-        T: Clone,
-    {
-        let mut result = TrieMap::new();
-
-        for (key, value) in self.iter() {
-            if !other.contains_key(&key) {
-                result.insert(key, value.clone());
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing entries whose keys are in exactly one of the maps.
-    /// This version consumes both maps.
-    ///
-    /// For keys that only exist in this map, values from this map are used.
-    /// For keys that only exist in the other map, values from the other map are used.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
+    /// use triemap::AsBytes;
     /// let mut map1 = TrieMap::new();
     /// map1.insert("a", 1);
     /// map1.insert("b", 2);
@@ -1082,114 +909,114 @@ impl<T> TrieMap<T> {
     /// map2.insert("b", 20);
     /// map2.insert("c", 30);
     ///
-    /// let symmetric_difference = map1.symmetric_difference(map2);
-    /// assert_eq!(symmetric_difference.len(), 2);
-    /// assert_eq!(symmetric_difference.get("a"), Some(&1));
-    /// assert_eq!(symmetric_difference.get("c"), Some(&30));
-    /// assert!(!symmetric_difference.contains_key("b"));
-    /// ```
-    pub fn symmetric_difference(self, other: TrieMap<T>) -> TrieMap<T> {
-        let mut result = TrieMap::new();
-
-        let self_keys: Vec<Vec<u8>> = self.keys().collect();
-        let other_keys: Vec<Vec<u8>> = other.keys().collect();
-
-        use std::collections::HashSet;
-        let mut common_keys = HashSet::new();
-
-        for key in &self_keys {
-            if other_keys.iter().any(|k| k == key) {
-                common_keys.insert(key.clone());
-            }
-        }
-
-        for (key, value) in self.into_iter() {
-            if !common_keys.contains(&key) {
-                result.insert(key, value);
-            }
-        }
-
-        for (key, value) in other.into_iter() {
-            if !common_keys.contains(&key) {
-                result.insert(key, value);
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing entries whose keys are in exactly one of the maps.
-    ///
-    /// For keys that only exist in this map, values from this map are used.
-    /// For keys that only exist in the other map, values from the other map are used.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("c", 30);
-    ///
-    /// let symmetric_difference = map1.symmetric_difference_ref(&map2);
-    /// assert_eq!(symmetric_difference.len(), 2);
-    /// assert_eq!(symmetric_difference.get("a"), Some(&1));
-    /// assert_eq!(symmetric_difference.get("c"), Some(&30));
-    /// assert!(!symmetric_difference.contains_key("b"));
-    /// ```
-    pub fn symmetric_difference_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
-    where
-        T: Clone,
-    {
-        let mut result = TrieMap::new();
-
-        for (key, value) in self.iter() {
-            if !other.contains_key(&key) {
-                result.insert(key, value.clone());
-            }
-        }
-
-        for (key, value) in other.iter() {
-            if !self.contains_key(&key) {
-                result.insert(key, value.clone());
-            }
-        }
-
-        result
-    }
-
-    /// Returns a new map containing all entries from both maps.
-    ///
-    /// If a key exists in both maps, the value from `other` is used.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use triemap::TrieMap;
-    /// let mut map1 = TrieMap::new();
-    /// map1.insert("a", 1);
-    /// map1.insert("b", 2);
-    ///
-    /// let mut map2 = TrieMap::new();
-    /// map2.insert("b", 20);
-    /// map2.insert("c", 30);
-    ///
-    /// let union = map1.union(map2);
+    /// let union: Vec<_> = map1.union(&map2).collect();
     /// assert_eq!(union.len(), 3);
-    /// assert_eq!(union.get("a"), Some(&1));
-    /// assert_eq!(union.get("b"), Some(&20)); // Value from map2
-    /// assert_eq!(union.get("c"), Some(&30));
+    /// assert!(union.contains(&("a".as_bytes_vec(), &1)));
+    /// assert!(union.contains(&("b".as_bytes_vec(), &2))); // Value from map1 is used
+    /// assert!(union.contains(&("c".as_bytes_vec(), &30)));
     /// ```
-    pub fn union(self, other: TrieMap<T>) -> TrieMap<T> {
-        let mut result = self;
-        for (key, value) in other.into_iter() {
-            result.insert(key, value);
-        }
-        result
+    pub fn union<'a>(
+        &'a self,
+        other: &'a TrieMap<T>,
+    ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
+        // Start with all entries from this map
+        self.iter()
+            // Then add entries from other map that don't exist in this map
+            .chain(other.iter().filter(move |(key, _)| !self.contains_key(key)))
+    }
+
+    /// Returns an iterator over the entries whose keys are present in both maps.
+    ///
+    /// The values from this map are used for the result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// use triemap::AsBytes;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    /// map2.insert("d", 40);
+    ///
+    /// let intersection: Vec<_> = map1.intersect(&map2).collect();
+    /// assert_eq!(intersection.len(), 2);
+    /// assert!(intersection.contains(&("b".as_bytes_vec(), &2))); // Values from map1
+    /// assert!(intersection.contains(&("c".as_bytes_vec(), &3)));
+    /// ```
+    pub fn intersect<'a>(
+        &'a self,
+        other: &'a TrieMap<T>,
+    ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
+        self.iter()
+            .filter(move |(key, _)| other.contains_key(key))
+            .map(|(key, value)| (key, value))
+    }
+
+    /// Returns an iterator over the entries whose keys are in this map but not in the other map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// use triemap::AsBytes;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("d", 40);
+    ///
+    /// let difference: Vec<_> = map1.difference(&map2).collect();
+    /// assert_eq!(difference.len(), 2);
+    /// assert!(difference.contains(&("a".as_bytes_vec(), &1)));
+    /// assert!(difference.contains(&("c".as_bytes_vec(), &3)));
+    /// ```
+    pub fn difference<'a>(
+        &'a self,
+        other: &'a TrieMap<T>,
+    ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
+        self.iter()
+            .filter(move |(key, _)| !other.contains_key(key))
+            .map(|(key, value)| (key, value))
+    }
+
+    /// Returns an iterator over entries whose keys are in exactly one of the maps.
+    ///
+    /// For keys that only exist in this map, values from this map are used.
+    /// For keys that only exist in the other map, values from the other map are used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// let symmetric_difference: Vec<_> = map1.symmetric_difference(&map2).collect();
+    /// assert_eq!(symmetric_difference.len(), 2);
+    /// // Note: order of elements may vary
+    /// assert!(symmetric_difference.iter().any(|(key, _)| key == "a".as_bytes()));
+    /// assert!(symmetric_difference.iter().any(|(key, _)| key == "c".as_bytes()));
+    /// assert!(!symmetric_difference.iter().any(|(key, _)| key == "b".as_bytes()));
+    /// ```
+    pub fn symmetric_difference<'a>(
+        &'a self,
+        other: &'a TrieMap<T>,
+    ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
+        self.difference(other).chain(other.difference(self))
     }
 
     /// Determines whether this map is a subset of another map.
@@ -2718,62 +2545,6 @@ mod tests {
         values.sort();
 
         assert_eq!(values, vec![&1, &2, &4]);
-    }
-
-    #[test]
-    fn test_intersect() {
-        let mut map1 = TrieMap::new();
-        map1.insert("a", 1);
-        map1.insert("b", 2);
-        map1.insert("c", 3);
-
-        let mut map2 = TrieMap::new();
-        map2.insert("b", 20);
-        map2.insert("c", 30);
-        map2.insert("d", 40);
-
-        let intersection = map1.intersect(map2);
-        assert_eq!(intersection.len(), 2);
-        assert_eq!(intersection.get("b"), Some(&2)); // Value from map1
-        assert_eq!(intersection.get("c"), Some(&3)); // Value from map1
-        assert!(intersection.get("a").is_none());
-        assert!(intersection.get("d").is_none());
-    }
-
-    #[test]
-    fn test_difference() {
-        let mut map1 = TrieMap::new();
-        map1.insert("a", 1);
-        map1.insert("b", 2);
-        map1.insert("c", 3);
-
-        let mut map2 = TrieMap::new();
-        map2.insert("b", 20);
-        map2.insert("d", 40);
-
-        let difference = map1.difference(map2);
-        assert_eq!(difference.len(), 2);
-        assert_eq!(difference.get("a"), Some(&1));
-        assert_eq!(difference.get("c"), Some(&3));
-        assert!(difference.get("b").is_none());
-        assert!(difference.get("d").is_none());
-    }
-
-    #[test]
-    fn test_union() {
-        let mut map1 = TrieMap::new();
-        map1.insert("a", 1);
-        map1.insert("b", 2);
-
-        let mut map2 = TrieMap::new();
-        map2.insert("b", 20);
-        map2.insert("c", 30);
-
-        let union = map1.union(map2);
-        assert_eq!(union.len(), 3);
-        assert_eq!(union.get("a"), Some(&1));
-        assert_eq!(union.get("b"), Some(&20)); // Value from map2
-        assert_eq!(union.get("c"), Some(&30));
     }
 
     #[test]
