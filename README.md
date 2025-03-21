@@ -2,6 +2,10 @@
 
 A Rust implementation of a map data structure backed by a trie (prefix tree).
 
+## Documentation
+ 
+ Full API documentation is available at: https://ekinimo.github.io/triemap
+
 ## Features
 
 - Key lookups with O(k) complexity where k is the key length
