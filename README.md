@@ -20,7 +20,7 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-triemap = { git = "https://github.com/yourusername/triemap" }
+triemap = { git = "https://github.com/ekinimo/triemap" }
 ```
 
 ### Basic Operations
