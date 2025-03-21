@@ -1,90 +1,6 @@
 use std::iter::{FlatMap, FromIterator};
 
 use std::hash::{Hash, Hasher};
-/*
-/// A mutable iterator over the values of a `TrieMap`.
-///
-/// This struct is created by the [`values_mut`] method on [`TrieMap`].
-///
-/// [`values_mut`]: TrieMap::values_mut
-pub struct ValuesMut<'a, T> {
-    data: std::iter::FlatMap<IterMut<'a, Option<T>>, IterMut<'a, T>>, /*indices: Vec<usize>,
-                                                                      position: usize,*/
-}
-*/
-/*
-impl<'a, T> Iterator for ValuesMut<'a, T> {
-    type Item = &'a mut T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position < self.indices.len() {
-            let idx = self.indices[self.position];
-            self.position += 1;
-
-            // We know this is valid because we collected valid indices
-            if let Some(ref mut value) = self.trie.data[idx] {
-                // We need to convert this mutable reference to one with the right lifetime
-                // This is safe because we only return each index once and indices are unique
-                let value_ptr = value as *mut T;
-                Some(unsafe { &mut *value_ptr })
-            } else {
-                // This should not happen in normal operation, but handle it just in case
-                self.next()
-            }
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.indices.len() - self.position;
-        (remaining, Some(remaining))
-    }
-}
-
-
-/// A mutable iterator over the key-value pairs of a `TrieMap`.
-///
-/// This struct is created by the [`iter_mut`] method on [`TrieMap`].
-///
-/// [`iter_mut`]: TrieMap::iter_mut
-pub struct IterMut<'a, T> {
-trie: &'a mut TrieMap<T>,
-    keys_indices: Vec<(Vec<u8>, usize)>,
-    position: usize,
-}
-
-impl<'a, T> Iterator for IterMut<'a, T> {
-    type Item = (Vec<u8>, &'a mut T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position < self.keys_indices.len() {
-            let (key, idx) = &self.keys_indices[self.position];
-            self.position += 1;
-
-            let key_clone = key.clone();
-
-            // We know this is valid because we collected valid indices
-            if let Some(ref mut value) = self.trie.data[*idx] {
-                // We need to convert this mutable reference to one with the right lifetime
-                // This is safe because we only return each index once and indices are unique
-                let value_ptr = value as *mut T;
-                Some((key_clone, unsafe { &mut *value_ptr }))
-            } else {
-                // This should not happen in normal operation, but handle it just in case
-                self.next()
-            }
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.keys_indices.len() - self.position;
-        (remaining, Some(remaining))
-    }
-}
-*/
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
@@ -125,7 +41,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
 /// assert_eq!(map.get("cherry"), None);
 ///
 /// // Iterate over key-value pairs
-/// for (key, value) in &map {
+/// for (key, value) in map.iter() {
 ///     println!("{}: {}", String::from_utf8_lossy(&key), value);
 /// }
 /// ```
@@ -219,86 +135,6 @@ impl<T: PartialEq> PartialEq for TrieMap<T> {
 }
 
 impl<T: Eq> Eq for TrieMap<T> {}
-
-/// An owning iterator over the key-value pairs of a `TrieMap`.
-///
-/// This struct is created by the [`into_iter`] method on [`TrieMap`]
-/// (provided by the [`IntoIterator`] trait).
-///
-/// [`into_iter`]: IntoIterator::into_iter
-pub struct IntoIter<T> {
-    pairs: Vec<(Vec<u8>, T)>,
-    position: usize,
-}
-
-impl<T> Iterator for IntoIter<T> {
-    type Item = (Vec<u8>, T);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.position < self.pairs.len() {
-            let result = std::mem::replace(
-                &mut self.pairs[self.position],
-                (Vec::new(), unsafe { std::mem::zeroed() }),
-            );
-            self.position += 1;
-            Some(result)
-        } else {
-            None
-        }
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let remaining = self.pairs.len() - self.position;
-        (remaining, Some(remaining))
-    }
-}
-
-impl<T> IntoIterator for TrieMap<T> {
-    type Item = (Vec<u8>, T);
-    type IntoIter = IntoIter<T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        let mut pairs = Vec::with_capacity(self.size);
-        let mut nodes = Vec::new();
-        let mut prefixes = Vec::new();
-
-        nodes.push(&self.root);
-        prefixes.push(Vec::new());
-
-        while let Some((node, prefix)) = nodes.pop().zip(prefixes.pop()) {
-            if let Some(idx) = node.data_idx {
-                if let Some(value) = &self.data[idx] {
-                    let value = unsafe { std::ptr::read(value as *const T) };
-                    pairs.push((prefix.clone(), value));
-                }
-            }
-
-            for byte in (0..=255u8).rev() {
-                if test_bit(&node.is_present, byte) {
-                    let idx = popcount(&node.is_present, byte) as usize;
-                    if idx < node.children.len() {
-                        let mut new_prefix = prefix.clone();
-                        new_prefix.push(byte);
-
-                        nodes.push(&node.children[idx]);
-                        prefixes.push(new_prefix);
-                    }
-                }
-            }
-        }
-
-        IntoIter { pairs, position: 0 }
-    }
-}
-
-impl<'a, T> IntoIterator for &'a TrieMap<T> {
-    type Item = (Vec<u8>, &'a T);
-    type IntoIter = Iter<'a, T>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.iter()
-    }
-}
 
 use std::ops::{Index, IndexMut};
 
@@ -1000,21 +836,6 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("b"), Some(&4));
     /// ```
     pub fn values_mut(&mut self) -> std::iter::Flatten<std::slice::IterMut<'_, Option<T>>> {
-        // Collect indices of all values
-        /*let mut indices = Vec::with_capacity(self.size);
-
-        for i in 0..self.data.len() {
-            if self.data[i].is_some() {
-                indices.push(i);
-            }
-        }
-
-        ValuesMut {
-            trie: self,
-            indices,
-            position: 0,
-        }*/
-
         self.data.iter_mut().flatten()
     }
 
@@ -1756,8 +1577,17 @@ impl<T> TrieMap<T> {
 
         new_map
     }
-    pub fn to_iter_vec(self) -> IntoIter<T> {
-        self.into_iter()
+    pub fn into_iter(mut self) -> impl Iterator<Item = (Vec<u8>, T)> {
+        let mut keys_indices = Vec::with_capacity(self.size);
+        let mut current_key = Vec::new();
+        Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
+        let map: std::collections::HashMap<_, _> =
+            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
+
+        self.data
+            .into_iter()
+            .enumerate()
+            .filter_map(move |(idx, opt)| opt.map(|value| (map[&idx].clone(), value)))
     }
 
     /// Retains only the elements specified by the predicate.
@@ -2667,10 +2497,8 @@ impl<T> TrieMap<T> {
     /// let keys: Vec<_> = map.into_keys().collect();
     /// assert_eq!(keys.len(), 2);
     /// ```
-    pub fn into_keys(self) -> IntoKeys<T> {
-        IntoKeys {
-            inner: self.into_iter(),
-        }
+    pub fn into_keys(self) -> impl Iterator<Item = Vec<u8>> {
+        self.into_iter().map(|(key, _)| key)
     }
 
     /// Converts the map into an iterator over values.
@@ -2686,10 +2514,8 @@ impl<T> TrieMap<T> {
     /// let values: Vec<_> = map.into_values().collect();
     /// assert_eq!(values.len(), 2);
     /// ```
-    pub fn into_values(self) -> IntoValues<T> {
-        IntoValues {
-            inner: self.into_iter(),
-        }
+    pub fn into_values(self) -> impl Iterator<Item = T> {
+        self.into_iter().map(|(_, value)| value)
     }
 }
 /// A draining iterator over the key-value pairs of a `TrieMap`.
@@ -2728,48 +2554,6 @@ impl<T> Drop for DrainIter<'_, T> {
         for i in self.position..self.keys.len() {
             let _ = self.trie_map.remove(&self.keys[i]);
         }
-    }
-}
-
-/// An owning iterator over the keys of a `TrieMap`.
-///
-/// This struct is created by the [`into_keys`] method on [`TrieMap`].
-///
-/// [`into_keys`]: TrieMap::into_keys
-pub struct IntoKeys<T> {
-    inner: IntoIter<T>,
-}
-
-impl<T> Iterator for IntoKeys<T> {
-    type Item = Vec<u8>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(k, _)| k)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
-    }
-}
-
-/// An owning iterator over the values of a `TrieMap`.
-///
-/// This struct is created by the [`into_values`] method on [`TrieMap`].
-///
-/// [`into_values`]: TrieMap::into_values
-pub struct IntoValues<T> {
-    inner: IntoIter<T>,
-}
-
-impl<T> Iterator for IntoValues<T> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.next().map(|(_, v)| v)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.inner.size_hint()
     }
 }
 
@@ -3592,19 +3376,17 @@ mod tests {
     }
 
     #[test]
-    fn test_iter_ref() {
+    fn test_into_iter() {
         let mut trie = TrieMap::new();
         trie.insert("a", 1);
         trie.insert("b", 2);
 
-        let mut vec: Vec<_> = (&trie).into_iter().collect();
+        let mut vec: Vec<_> = trie.into_iter().collect();
         vec.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
         assert_eq!(vec.len(), 2);
-        assert_eq!(*vec[0].1, 1);
-        assert_eq!(*vec[1].1, 2);
-
-        assert_eq!(trie.get("a"), Some(&1));
+        assert_eq!(vec[0].1, 1);
+        assert_eq!(vec[1].1, 2);
     }
 
     #[test]
