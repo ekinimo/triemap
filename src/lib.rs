@@ -189,7 +189,7 @@ impl<T: std::fmt::Debug> std::fmt::Debug for TrieMap<T> {
 
         for (key, value) in self.iter() {
             let key_display = match std::str::from_utf8(&key) {
-                Ok(s) => format!("{}", s),
+                Ok(s) => s.to_string(),
                 Err(_) => format!("{:?}", key),
             };
 
@@ -656,8 +656,7 @@ impl<'a, T> OccupiedEntry<'a, T> {
     /// assert_eq!(map.contains_key("a"), false);
     /// ```
     pub fn remove(self) -> T {
-        let value = self.trie.remove(&self.key).unwrap();
-        value
+        self.trie.remove(&self.key).unwrap()
     }
 
     /// Replaces the value in the entry with the given value, returning the old value.
@@ -733,8 +732,8 @@ fn test_bit(a: &[u64; 4], k: u8) -> bool {
 fn popcount(a: &[u64; 4], k: u8) -> u16 {
     let mut res = 0;
 
-    for i in 0..(k / 64) as usize {
-        res += a[i].count_ones() as u16;
+    for i in a.iter().take((k / 64) as usize) {
+        res += i.count_ones() as u16;
     }
 
     for i in 0..(k % 64) {
@@ -742,10 +741,6 @@ fn popcount(a: &[u64; 4], k: u8) -> u16 {
     }
 
     res
-}
-
-fn popcount_all(a: &[u64; 4]) -> u16 {
-    a.iter().map(|&x| x.count_ones() as u16).sum()
 }
 
 /// The `AsBytes` trait allows a type to be used as a key in a `TrieMap`.
@@ -806,7 +801,7 @@ impl AsBytes for String {
     }
 }
 
-impl<'a, T: AsBytes + ?Sized> AsBytes for &'a T {
+impl<T: AsBytes + ?Sized> AsBytes for &T {
     fn as_bytes(&self) -> &[u8] {
         T::as_bytes(*self)
     }
@@ -903,7 +898,7 @@ pub struct PrefixKeys<'a, T> {
     inner: PrefixIter<'a, T>,
 }
 
-impl<'a, T> Iterator for PrefixKeys<'a, T> {
+impl<T> Iterator for PrefixKeys<'_, T> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -950,7 +945,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&11));
     /// assert_eq!(map.get("b"), Some(&12));
     /// ```
-    pub fn iter_mut<'a>(&'a mut self) -> IterMut<'a, T> {
+    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
         let mut keys_indices = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
 
@@ -1003,7 +998,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&2));
     /// assert_eq!(map.get("b"), Some(&4));
     /// ```
-    pub fn values_mut<'a>(&'a mut self) -> ValuesMut<'a, T> {
+    pub fn values_mut(&mut self) -> ValuesMut<'_, T> {
         // Collect indices of all values
         let mut indices = Vec::with_capacity(self.size);
 
@@ -1036,7 +1031,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(iter.next().unwrap().1, &2);
     /// assert!(iter.next().is_none());
     /// ```
-    pub fn prefix_iter<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixIter<'a, T> {
+    pub fn prefix_iter<K: AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
         let mut result = Vec::new();
         if let Some(node) = self.find_node(prefix.as_bytes()) {
             let mut prefix_vec = prefix.as_bytes().to_vec();
@@ -1067,7 +1062,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(String::from_utf8(keys[0].clone()).unwrap(), "apple");
     /// assert_eq!(String::from_utf8(keys[1].clone()).unwrap(), "application");
     /// ```
-    pub fn prefix_keys<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixKeys<'a, T> {
+    pub fn prefix_keys<K: AsBytes>(&self, prefix: K) -> PrefixKeys<'_, T> {
         PrefixKeys {
             inner: self.prefix_iter(prefix),
         }
@@ -1089,7 +1084,7 @@ impl<T> TrieMap<T> {
     ///
     /// assert_eq!(values, vec![&1, &2]);
     /// ```
-    pub fn prefix_values<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixValues<'a, T> {
+    pub fn prefix_values<K: AsBytes>(&self, prefix: K) -> PrefixValues<'_, T> {
         PrefixValues {
             inner: self.prefix_iter(prefix),
         }
@@ -2145,7 +2140,7 @@ impl<T> TrieMap<T> {
     /// let matches = map.get_prefix_matches("app");
     /// assert_eq!(matches.len(), 2);
     /// ```
-    pub fn get_prefix_matches<'a, K: AsBytes>(&'a self, prefix: K) -> Vec<(Vec<u8>, &'a T)> {
+    pub fn get_prefix_matches<K: AsBytes>(&self, prefix: K) -> Vec<(Vec<u8>, &'_ T)> {
         let bytes = prefix.as_bytes();
         let mut result = Vec::new();
 
@@ -2343,8 +2338,9 @@ impl<T> TrieMap<T> {
                     let child_idx = path_indices[depth];
 
                     let mut current = &mut self.root;
-                    for i in 0..depth {
-                        current = &mut current.children[path_indices[i]];
+
+                    for item in path_indices.iter_mut().take(depth) {
+                        current = &mut current.children[*item]
                     }
 
                     let child = &current.children[child_idx];
@@ -2391,7 +2387,7 @@ impl<T> TrieMap<T> {
     ///     println!("{}: {}", String::from_utf8_lossy(&key), value);
     /// }
     /// ```
-    pub fn iter<'a>(&'a self) -> Iter<'a, T> {
+    pub fn iter(&self) -> Iter<'_, T> {
         let mut pairs = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
 
@@ -2439,7 +2435,7 @@ impl<T> TrieMap<T> {
     ///     println!("Key: {}", String::from_utf8_lossy(&key));
     /// }
     /// ```
-    pub fn keys<'a>(&'a self) -> Keys<'a, T> {
+    pub fn keys(&self) -> Keys<'_, T> {
         Keys { inner: self.iter() }
     }
 
@@ -2457,7 +2453,7 @@ impl<T> TrieMap<T> {
     ///     println!("Value: {}", value);
     /// }
     /// ```
-    pub fn values<'a>(&'a self) -> Values<'a, T> {
+    pub fn values(&self) -> Values<'_, T> {
         Values { inner: self.iter() }
     }
 
@@ -2703,7 +2699,7 @@ pub struct DrainIter<'a, T> {
     position: usize,
 }
 
-impl<'a, T> Iterator for DrainIter<'a, T> {
+impl<T> Iterator for DrainIter<'_, T> {
     type Item = (Vec<u8>, T);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -2723,7 +2719,7 @@ impl<'a, T> Iterator for DrainIter<'a, T> {
     }
 }
 
-impl<'a, T> Drop for DrainIter<'a, T> {
+impl<T> Drop for DrainIter<'_, T> {
     fn drop(&mut self) {
         for i in self.position..self.keys.len() {
             let _ = self.trie_map.remove(&self.keys[i]);
@@ -2809,7 +2805,7 @@ pub struct Keys<'a, T> {
     inner: Iter<'a, T>,
 }
 
-impl<'a, T> Iterator for Keys<'a, T> {
+impl<T> Iterator for Keys<'_, T> {
     type Item = Vec<u8>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -3144,7 +3140,6 @@ mod tests {
         assert!(!test_bit(&bits, 65));
 
         assert_eq!(popcount(&bits, 10), 1);
-        assert_eq!(popcount_all(&bits), 3);
     }
 
     #[test]
@@ -3304,8 +3299,6 @@ mod tests {
         assert_eq!(trie.len(), 0);
         assert!(trie.is_empty());
     }
-
-    
 
     #[test]
     fn test_entry_or_insert() {
