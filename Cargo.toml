@@ -1,6 +1,14 @@
 [package]
 name = "triemap"
-version = "0.1.0"
+version = "0.0.1"
+authors = ["Ekin Igdir"]
 edition = "2024"
+description = "A trie-based map implementation in Rust"
+repository = "https://github.com/ekinimo/triemap"
+documentation = "https://ekinimo.github.io/triemap/"
+readme = "README.md"
+license = "MIT"
+keywords = ["trie", "map", "data-structure", "prefix", "collection"]
+categories = ["data-structures"]
 
 [dependencies]
