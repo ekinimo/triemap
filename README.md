@@ -4,15 +4,11 @@ A Rust implementation of a map data structure backed by a trie (prefix tree).
 
 ## Features
 
-- Fast key lookups with O(k) complexity where k is the key length
-- Prefix-based operations (matching keys with a common prefix)
-- Intuitive API similar to Rust's standard collections
-- Full iterator support
-- Entry API for in-place updates
-
-## Documentation
-
-Full API documentation is available at: https://ekinimo.github.io/triemap
+- Key lookups with O(k) complexity where k is the key length
+- Prefix-based operations for finding and manipulating keys with a common prefix
+- API similar to Rust's standard collections
+- Iterator support
+- Entry API for efficient updates
 
 ## Usage
 
@@ -54,7 +50,7 @@ assert_eq!(map.get("cherry"), None);
 
 ### Prefix Operations
 
-One of TrieMap's strengths is working with key prefixes:
+Working with key prefixes:
 
 ```rust
 use triemap::TrieMap;
@@ -114,7 +110,7 @@ map.insert("b", 2);
 map.insert("c", 3);
 
 // Iterate over key-value pairs
-for (key, value) in &map {
+for (key, value) in map.iter() {
     println!("{}: {}", String::from_utf8_lossy(&key), value);
 }
 
@@ -134,7 +130,7 @@ for value in map.values_mut() {
 }
 ```
 
-### Set Operations
+### Set-like Operations
 
 ```rust
 use triemap::TrieMap;
@@ -147,19 +143,10 @@ let mut map2 = TrieMap::new();
 map2.insert("b", 20);
 map2.insert("c", 30);
 
-// Intersection
-let intersection = map1.intersect_ref(&map2);
-assert_eq!(intersection.len(), 1);
-assert_eq!(intersection.get("b"), Some(&2));
-
-// Difference
-let difference = map1.difference_ref(&map2);
-assert_eq!(difference.len(), 1);
-assert_eq!(difference.get("a"), Some(&1));
-
-// Union
-let union = map1.clone().union(map2.clone());
-assert_eq!(union.len(), 3);
+// Union, difference, intersect operations
+let union: Vec<_> = map1.union(&map2).collect();
+let difference: Vec<_> = map1.difference(&map2).collect();
+let intersection: Vec<_> = map1.intersect(&map2).collect();
 ```
 
 ## Contributing

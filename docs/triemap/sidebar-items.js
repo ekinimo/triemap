@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["Entry"],"struct":["DrainIter","Iter","Keys","OccupiedEntry","PrefixIter","PrefixKeys","PrefixValues","TrieMap","VacantEntry","Values"],"trait":["AsBytes"]};
+window.SIDEBAR_ITEMS = {"enum":["Entry"],"struct":["DrainIter","Iter","Keys","OccupiedEntry","PrefixIter","PrefixKeys","PrefixValues","TrieMap","VacantEntry","Values"],"trait":["AsBytes"],"type":["Result"]};
