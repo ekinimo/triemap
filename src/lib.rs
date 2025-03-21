@@ -4,6 +4,56 @@ use std::iter::FromIterator;
 use std::borrow::Borrow;
 use std::hash::{Hash, Hasher};
 
+/// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for efficient storage
+/// and retrieval of data.
+///
+/// # Features
+///
+/// - Fast key lookups with O(k) complexity where k is the key length
+/// - Prefix-based operations (matching keys with a common prefix)
+/// - Iterator support
+/// - Entry API for efficient in-place updates
+///
+/// # Examples
+///
+/// ```
+/// use triemap::TrieMap;
+///
+/// // Create a new TrieMap
+/// let mut map = TrieMap::new();
+///
+/// // Insert key-value pairs
+/// map.insert("apple", 1);
+/// map.insert("banana", 2);
+/// map.insert("cherry", 3);
+///
+/// // Check if a key exists
+/// assert!(map.contains_key("apple"));
+/// assert!(!map.contains_key("grape"));
+///
+/// // Get a value
+/// assert_eq!(map.get("banana"), Some(&2));
+///
+/// // Update a value
+/// map.insert("apple", 10);
+/// assert_eq!(map.get("apple"), Some(&10));
+///
+/// // Remove a value
+/// assert_eq!(map.remove("cherry"), Some(3));
+/// assert_eq!(map.get("cherry"), None);
+///
+/// // Iterate over key-value pairs
+/// for (key, value) in &map {
+///     println!("{}: {}", String::from_utf8_lossy(&key), value);
+/// }
+/// ```
+pub struct TrieMap<T> {
+    data: Vec<Option<T>>,
+    free_indices: Vec<usize>,
+    root: TrieNode,
+    size: usize,
+}
+
 impl<T, K: AsBytes, V: Into<T>, const N: usize> From<[(K, V); N]> for TrieMap<T> {
     fn from(array: [(K, V); N]) -> Self {
         let mut trie = TrieMap::with_capacity(N);
@@ -88,6 +138,12 @@ impl<T: PartialEq> PartialEq for TrieMap<T> {
 
 impl<T: Eq> Eq for TrieMap<T> {}
 
+/// An owning iterator over the key-value pairs of a `TrieMap`.
+///
+/// This struct is created by the [`into_iter`] method on [`TrieMap`]
+/// (provided by the [`IntoIterator`] trait).
+///
+/// [`into_iter`]: IntoIterator::into_iter
 pub struct IntoIter<T> {
     pairs: Vec<(Vec<u8>, T)>,
     position: usize,
@@ -206,24 +262,65 @@ where
     }
 }
 
+/// Represents an entry in a `TrieMap` which may either be vacant or occupied.
+///
+/// This is part of the `Entry API` and is used to ensure that only a single lookup is performed.
+///
+/// # Examples
+///
+/// ```
+/// use triemap::{TrieMap, Entry};
+///
+/// let mut map = TrieMap::new();
+///
+/// match map.entry("a") {
+///     Entry::Vacant(entry) => {
+///         entry.insert(1);
+///     }
+///     Entry::Occupied(entry) => {
+///         *entry.into_mut() += 1;
+///     }
+/// }
+/// ```
 pub enum Entry<'a, T> {
+    /// An occupied entry.
     Occupied(OccupiedEntry<'a, T>),
-
+    /// A vacant entry.
     Vacant(VacantEntry<'a, T>),
 }
 
+/// A view into an occupied entry in a `TrieMap`.
+///
+/// It is part of the [`Entry`] API.
 pub struct OccupiedEntry<'a, T> {
     trie: &'a mut TrieMap<T>,
     key: Vec<u8>,
     data_idx: usize,
 }
 
+/// A view into a vacant entry in a `TrieMap`.
+///
+/// It is part of the [`Entry`] API.
 pub struct VacantEntry<'a, T> {
     trie: &'a mut TrieMap<T>,
     key: Vec<u8>,
 }
 
 impl<'a, T> Entry<'a, T> {
+    /// Returns a reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Some(value) = map.entry("a").get() {
+    ///     assert_eq!(*value, 1);
+    /// }
+    /// assert_eq!(map.entry("b").get(), None);
+    /// ```
     pub fn get(&self) -> Option<&T> {
         match self {
             Entry::Occupied(entry) => Some(entry.get()),
@@ -231,12 +328,38 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Returns a mutable reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Some(value) = map.entry("a").get_mut() {
+    ///     *value += 1;
+    /// }
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn get_mut(&mut self) -> Option<&mut T> {
         match self {
             Entry::Occupied(entry) => Some(entry.get_mut()),
             Entry::Vacant(_) => None,
         }
     }
+
+    /// Ensures a value is in the entry by inserting the default if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// map.entry("a").or_default();
+    /// assert_eq!(map.get("a"), Some(&0));
+    /// ```
     pub fn or_default(self) -> &'a mut T
     where
         T: Default,
@@ -247,6 +370,20 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Ensures a value is in the entry by inserting the given value if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// map.entry("a").or_insert(1);
+    /// assert_eq!(map.get("a"), Some(&1));
+    ///
+    /// *map.entry("a").or_insert(10) *= 2;
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn or_insert(self, default: T) -> &'a mut T {
         match self {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -254,6 +391,24 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Ensures a value is in the entry by inserting the result of the function if empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// map.entry("a").or_insert_with(|| 1);
+    /// assert_eq!(map.get("a"), Some(&1));
+    ///
+    /// let mut called = false;
+    /// map.entry("a").or_insert_with(|| {
+    ///     called = true;
+    ///     2
+    /// });
+    /// assert_eq!(called, false);
+    /// ```
     pub fn or_insert_with<F: FnOnce() -> T>(self, default: F) -> &'a mut T {
         match self {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -261,6 +416,19 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Ensures a value is in the entry by inserting the result of the function if empty.
+    ///
+    /// The function is given a reference to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// map.entry("a").or_insert_with_key(|key| key.len());
+    /// assert_eq!(map.get("a"), Some(&1));
+    /// ```
     pub fn or_insert_with_key<F: FnOnce(&[u8]) -> T>(self, default: F) -> &'a mut T {
         match self {
             Entry::Occupied(entry) => entry.into_mut(),
@@ -271,6 +439,16 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Returns a reference to the key in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map : TrieMap<()> = TrieMap::new();
+    ///
+    /// assert_eq!(map.entry("a").key(), b"a");
+    /// ```
     pub fn key(&self) -> &[u8] {
         match self {
             Entry::Occupied(entry) => entry.key(),
@@ -278,6 +456,26 @@ impl<'a, T> Entry<'a, T> {
         }
     }
 
+    /// Provides in-place mutable access to an occupied entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// map.entry("a")
+    ///    .and_modify(|v| *v += 1)
+    ///    .or_insert(1);
+    ///
+    /// assert_eq!(map.get("a"), Some(&1));
+    ///
+    /// map.entry("a")
+    ///    .and_modify(|v| *v += 1)
+    ///    .or_insert(0);
+    ///
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn and_modify<F: FnOnce(&mut T)>(self, f: F) -> Self {
         match self {
             Entry::Occupied(mut entry) => {
@@ -290,27 +488,113 @@ impl<'a, T> Entry<'a, T> {
 }
 
 impl<'a, T> OccupiedEntry<'a, T> {
+    /// Gets a reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(entry) = map.entry("a") {
+    ///     assert_eq!(entry.get(), &1);
+    /// }
+    /// ```
     pub fn get(&self) -> &T {
         self.trie.data[self.data_idx].as_ref().unwrap()
     }
 
+    /// Gets a mutable reference to the value in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(mut entry) = map.entry("a") {
+    ///     *entry.get_mut() += 1;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn get_mut(&mut self) -> &mut T {
         self.trie.data[self.data_idx].as_mut().unwrap()
     }
 
+    /// Converts the entry into a mutable reference to the value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(entry) = map.entry("a") {
+    ///     *entry.into_mut() += 1;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn into_mut(self) -> &'a mut T {
         self.trie.data[self.data_idx].as_mut().unwrap()
     }
 
+    /// Gets a reference to the key in the entry.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(entry) = map.entry("a") {
+    ///     assert_eq!(entry.key(), b"a");
+    /// }
+    /// ```
     pub fn key(&self) -> &[u8] {
         &self.key
     }
 
+    /// Removes the entry, returning the value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(entry) = map.entry("a") {
+    ///     assert_eq!(entry.remove(), 1);
+    /// }
+    ///
+    /// assert_eq!(map.contains_key("a"), false);
+    /// ```
     pub fn remove(self) -> T {
         let value = self.trie.remove(&self.key).unwrap();
         value
     }
 
+    /// Replaces the value in the entry with the given value, returning the old value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Entry::Occupied(mut entry) = map.entry("a") {
+    ///     assert_eq!(entry.insert(2), 1);
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn insert(&mut self, value: T) -> T {
         let old_value = std::mem::replace(&mut self.trie.data[self.data_idx], Some(value));
         old_value.unwrap()
@@ -318,10 +602,36 @@ impl<'a, T> OccupiedEntry<'a, T> {
 }
 
 impl<'a, T> VacantEntry<'a, T> {
+    /// Gets a reference to the key that would be used when inserting a value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map : TrieMap<()> = TrieMap::new();
+    ///
+    /// if let Entry::Vacant(entry) = map.entry("a") {
+    ///     assert_eq!(entry.key(), b"a");
+    /// }
+    /// ```
     pub fn key(&self) -> &[u8] {
         &self.key
     }
 
+    /// Inserts the given value into the entry, and returns a mutable reference to it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    ///
+    /// if let Entry::Vacant(entry) = map.entry("a") {
+    ///     entry.insert(1);
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&1));
+    /// ```
     pub fn insert(self, value: T) -> &'a mut T {
         self.trie.insert(&self.key, value);
         self.trie.get_mut(&self.key).unwrap()
@@ -358,7 +668,37 @@ fn popcount_all(a: &[u64; 4]) -> u16 {
     a.iter().map(|&x| x.count_ones() as u16).sum()
 }
 
+/// The `AsBytes` trait allows a type to be used as a key in a `TrieMap`.
+///
+/// It provides a method to convert the type to a byte slice.
+///
+/// # Examples
+///
+/// ```
+/// use triemap::{TrieMap, AsBytes};
+///
+/// struct UserId(u64);
+///
+/// impl AsBytes for UserId {
+///     fn as_bytes(&self) -> &[u8] {
+///         // Use the id's byte representation as the key
+///         unsafe {
+///             std::slice::from_raw_parts(
+///                 &self.0 as *const u64 as *const u8,
+///                 std::mem::size_of::<u64>()
+///             )
+///         }
+///     }
+/// }
+///
+/// let mut map = TrieMap::new();
+/// map.insert(UserId(1), "Alice");
+/// map.insert(UserId(2), "Bob");
+///
+/// assert_eq!(map.get(&UserId(1)), Some(&"Alice"));
+/// ```
 pub trait AsBytes {
+    /// Converts the value to a byte slice.
     fn as_bytes(&self) -> &[u8];
 }
 
@@ -409,14 +749,16 @@ impl TrieNode {
     }
 }
 
-pub struct TrieMap<T> {
-    data: Vec<Option<T>>,
-    free_indices: Vec<usize>,
-    root: TrieNode,
-    size: usize,
-}
-
 impl<T> Default for TrieMap<T> {
+    /// Creates a new empty `TrieMap`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let map: TrieMap<i32> = Default::default();
+    /// assert!(map.is_empty());
+    /// ```
     fn default() -> Self {
         Self::new()
     }
@@ -448,7 +790,502 @@ impl<T: Clone> From<TrieMap<T>> for std::collections::HashMap<Vec<u8>, T> {
     }
 }
 
+/// An iterator over entries with keys that start with a specific prefix.
+pub struct PrefixIter<'a, T> {
+    pairs: Vec<(Vec<u8>, &'a T)>,
+    position: usize,
+}
+
+impl<'a, T> Iterator for PrefixIter<'a, T> {
+    type Item = (Vec<u8>, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.position < self.pairs.len() {
+            let result = (
+                self.pairs[self.position].0.clone(),
+                self.pairs[self.position].1,
+            );
+            self.position += 1;
+            Some(result)
+        } else {
+            None
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.pairs.len() - self.position;
+        (remaining, Some(remaining))
+    }
+}
+
+/// Iterator for keys that start with a specific prefix.
+pub struct PrefixKeys<'a, T> {
+    inner: PrefixIter<'a, T>,
+}
+
+impl<'a, T> Iterator for PrefixKeys<'a, T> {
+    type Item = Vec<u8>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+/// Iterator for values that have keys starting with a specific prefix.
+pub struct PrefixValues<'a, T> {
+    inner: PrefixIter<'a, T>,
+}
+
+impl<'a, T> Iterator for PrefixValues<'a, T> {
+    type Item = &'a T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next().map(|(_, v)| v)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
 impl<T> TrieMap<T> {
+    /// Returns an iterator over all key-value pairs with keys that start with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let mut iter = map.prefix_iter("app");
+    /// assert_eq!(iter.next().unwrap().1, &1);
+    /// assert_eq!(iter.next().unwrap().1, &2);
+    /// assert!(iter.next().is_none());
+    /// ```
+    pub fn prefix_iter<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixIter<'a, T> {
+        let mut result = Vec::new();
+        if let Some(node) = self.find_node(prefix.as_bytes()) {
+            let mut prefix_vec = prefix.as_bytes().to_vec();
+            self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
+        }
+
+        PrefixIter {
+            pairs: result,
+            position: 0,
+        }
+    }
+
+    /// Returns an iterator over all keys that start with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let mut keys = map.prefix_keys("app").collect::<Vec<_>>();
+    /// keys.sort();
+    ///
+    /// assert_eq!(keys.len(), 2);
+    /// assert_eq!(String::from_utf8(keys[0].clone()).unwrap(), "apple");
+    /// assert_eq!(String::from_utf8(keys[1].clone()).unwrap(), "application");
+    /// ```
+    pub fn prefix_keys<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixKeys<'a, T> {
+        PrefixKeys {
+            inner: self.prefix_iter(prefix),
+        }
+    }
+
+    /// Returns an iterator over all values whose keys start with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let mut values = map.prefix_values("app").collect::<Vec<_>>();
+    /// values.sort();
+    ///
+    /// assert_eq!(values, vec![&1, &2]);
+    /// ```
+    pub fn prefix_values<'a, K: AsBytes>(&'a self, prefix: K) -> PrefixValues<'a, T> {
+        PrefixValues {
+            inner: self.prefix_iter(prefix),
+        }
+    }
+
+    /// Returns a new map containing only the entries whose keys are present in both maps.
+    ///
+    /// The values from this map are used for the result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    /// map2.insert("d", 40);
+    ///
+    /// let intersection = map1.intersect(map2);
+    /// assert_eq!(intersection.len(), 2);
+    /// assert_eq!(intersection.get("b"), Some(&2)); // Values from map1
+    /// assert_eq!(intersection.get("c"), Some(&3));
+    /// assert!(!intersection.contains_key("a"));
+    /// assert!(!intersection.contains_key("d"));
+    /// ```
+    pub fn intersect(self, other: TrieMap<T>) -> TrieMap<T> {
+        let mut result = TrieMap::new();
+
+        for (key, value) in self.into_iter() {
+            if other.contains_key(&key) {
+                result.insert(key, value);
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing only the entries whose keys are present in both maps.
+    /// This version takes references and clones values.
+    ///
+    /// The values from this map are used for the result.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    /// map2.insert("d", 40);
+    ///
+    /// let intersection = map1.intersect_ref(&map2);
+    /// assert_eq!(intersection.len(), 2);
+    /// assert_eq!(intersection.get("b"), Some(&2)); // Values from map1
+    /// assert_eq!(intersection.get("c"), Some(&3));
+    /// assert!(!intersection.contains_key("a"));
+    /// assert!(!intersection.contains_key("d"));
+    /// ```
+    pub fn intersect_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
+    where
+        T: Clone,
+    {
+        let mut result = TrieMap::new();
+
+        for (key, value) in self.iter() {
+            if other.contains_key(&key) {
+                result.insert(key, value.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing the entries whose keys are in this map but not in the other map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("d", 40);
+    ///
+    /// let difference = map1.difference(map2);
+    /// assert_eq!(difference.len(), 2);
+    /// assert_eq!(difference.get("a"), Some(&1));
+    /// assert_eq!(difference.get("c"), Some(&3));
+    /// assert!(!difference.contains_key("b"));
+    /// assert!(!difference.contains_key("d"));
+    /// ```
+    pub fn difference(self, other: TrieMap<T>) -> TrieMap<T> {
+        let mut result = TrieMap::new();
+
+        for (key, value) in self.into_iter() {
+            if !other.contains_key(&key) {
+                result.insert(key, value);
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing the entries whose keys are in this map but not in the other map.
+    /// This version takes references and clones values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    /// map1.insert("c", 3);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("d", 40);
+    ///
+    /// let difference = map1.difference_ref(&map2);
+    /// assert_eq!(difference.len(), 2);
+    /// assert_eq!(difference.get("a"), Some(&1));
+    /// assert_eq!(difference.get("c"), Some(&3));
+    /// assert!(!difference.contains_key("b"));
+    /// assert!(!difference.contains_key("d"));
+    /// ```
+    pub fn difference_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
+    where
+        T: Clone,
+    {
+        let mut result = TrieMap::new();
+
+        for (key, value) in self.iter() {
+            if !other.contains_key(&key) {
+                result.insert(key, value.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing entries whose keys are in exactly one of the maps.
+    /// This version consumes both maps.
+    ///
+    /// For keys that only exist in this map, values from this map are used.
+    /// For keys that only exist in the other map, values from the other map are used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// let symmetric_difference = map1.symmetric_difference(map2);
+    /// assert_eq!(symmetric_difference.len(), 2);
+    /// assert_eq!(symmetric_difference.get("a"), Some(&1));
+    /// assert_eq!(symmetric_difference.get("c"), Some(&30));
+    /// assert!(!symmetric_difference.contains_key("b"));
+    /// ```
+    pub fn symmetric_difference(self, other: TrieMap<T>) -> TrieMap<T> {
+        let mut result = TrieMap::new();
+
+        // Step 1: Collect keys from both maps
+        let self_keys: Vec<Vec<u8>> = self.keys().collect();
+        let other_keys: Vec<Vec<u8>> = other.keys().collect();
+
+        // Step 2: Create a hashmap to track common keys efficiently
+        use std::collections::HashSet;
+        let mut common_keys = HashSet::new();
+
+        for key in &self_keys {
+            if other_keys.iter().any(|k| k == key) {
+                common_keys.insert(key.clone());
+            }
+        }
+
+        // Step 3: Process both maps
+        for (key, value) in self.into_iter() {
+            if !common_keys.contains(&key) {
+                result.insert(key, value);
+            }
+        }
+
+        for (key, value) in other.into_iter() {
+            if !common_keys.contains(&key) {
+                result.insert(key, value);
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing entries whose keys are in exactly one of the maps.
+    ///
+    /// For keys that only exist in this map, values from this map are used.
+    /// For keys that only exist in the other map, values from the other map are used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// let symmetric_difference = map1.symmetric_difference_ref(&map2);
+    /// assert_eq!(symmetric_difference.len(), 2);
+    /// assert_eq!(symmetric_difference.get("a"), Some(&1));
+    /// assert_eq!(symmetric_difference.get("c"), Some(&30));
+    /// assert!(!symmetric_difference.contains_key("b"));
+    /// ```
+    pub fn symmetric_difference_ref(&self, other: &TrieMap<T>) -> TrieMap<T>
+    where
+        T: Clone,
+    {
+        let mut result = TrieMap::new();
+
+        for (key, value) in self.iter() {
+            if !other.contains_key(&key) {
+                result.insert(key, value.clone());
+            }
+        }
+
+        for (key, value) in other.iter() {
+            if !self.contains_key(&key) {
+                result.insert(key, value.clone());
+            }
+        }
+
+        result
+    }
+
+    /// Returns a new map containing all entries from both maps.
+    ///
+    /// If a key exists in both maps, the value from `other` is used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// let union = map1.union(map2);
+    /// assert_eq!(union.len(), 3);
+    /// assert_eq!(union.get("a"), Some(&1));
+    /// assert_eq!(union.get("b"), Some(&20)); // Value from map2
+    /// assert_eq!(union.get("c"), Some(&30));
+    /// ```
+    pub fn union(self, other: TrieMap<T>) -> TrieMap<T> {
+        let mut result = self;
+        for (key, value) in other.into_iter() {
+            result.insert(key, value);
+        }
+        result
+    }
+
+    /// Determines whether this map is a subset of another map.
+    ///
+    /// Returns `true` if all keys in this map are also in the other map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("a", 10);
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// assert!(map1.is_subset_of(&map2));
+    /// assert!(!map2.is_subset_of(&map1));
+    /// ```
+    pub fn is_subset_of(&self, other: &TrieMap<T>) -> bool {
+        self.iter().all(|(key, _)| other.contains_key(&key))
+    }
+
+    /// Determines whether this map is a proper subset of another map.
+    ///
+    /// Returns `true` if all keys in this map are in the other map,
+    /// and the other map has at least one key not in this map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("a", 10);
+    /// map2.insert("b", 20);
+    /// map2.insert("c", 30);
+    ///
+    /// assert!(map1.is_proper_subset_of(&map2));
+    /// assert!(!map2.is_proper_subset_of(&map1));
+    ///
+    /// let mut map3 = TrieMap::new();
+    /// map3.insert("a", 1);
+    /// map3.insert("b", 2);
+    ///
+    /// assert!(!map1.is_proper_subset_of(&map3));
+    /// ```
+    pub fn is_proper_subset_of(&self, other: &TrieMap<T>) -> bool {
+        self.len() < other.len() && self.is_subset_of(other)
+    }
+
+    /// Merges another map into this one.
+    ///
+    /// If a key exists in both maps, the value from the other map is used.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 3);
+    /// map2.insert("c", 4);
+    ///
+    /// map1.merge(&map2);
+    ///
+    /// assert_eq!(map1.get("a"), Some(&1));
+    /// assert_eq!(map1.get("b"), Some(&3));
+    /// assert_eq!(map1.get("c"), Some(&4));
+    /// ```
     pub fn merge(&mut self, other: &TrieMap<T>)
     where
         T: Clone,
@@ -458,6 +1295,29 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Merges another map into this one using a custom function to resolve conflicts.
+    ///
+    /// If a key exists in both maps, the function is called with the key, this map's value, and
+    /// the other map's value, and the result is used as the new value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let mut map2 = TrieMap::new();
+    /// map2.insert("b", 3);
+    /// map2.insert("c", 4);
+    ///
+    /// map1.merge_with(&map2, |_, v1, v2| v1 + v2);
+    ///
+    /// assert_eq!(map1.get("a"), Some(&1));
+    /// assert_eq!(map1.get("b"), Some(&5)); // 2 + 3 = 5
+    /// assert_eq!(map1.get("c"), Some(&4));
+    /// ```
     pub fn merge_with<F>(&mut self, other: &TrieMap<T>, mut f: F)
     where
         F: FnMut(&[u8], &T, &T) -> T,
@@ -473,6 +1333,22 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Gets the given key's corresponding value if it exists, otherwise inserts a default value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// // First call inserts the default value
+    /// *map.get_or_insert_default("a") = 1;
+    /// assert_eq!(map.get("a"), Some(&1));
+    ///
+    /// // Second call doesn't change the value
+    /// *map.get_or_insert_default("a") = 2;
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
     pub fn get_or_insert_default<K: AsBytes>(&mut self, key: K) -> &mut T
     where
         T: Default,
@@ -486,6 +1362,27 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Gets the given key's corresponding value if it exists, otherwise inserts a value using the default function.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// // First call inserts the generated value
+    /// *map.get_or_insert_with("a", || 42) = 1;
+    /// assert_eq!(map.get("a"), Some(&1));
+    ///
+    /// // Second call doesn't change the value
+    /// let called = std::cell::Cell::new(false);
+    /// *map.get_or_insert_with("a", || {
+    ///     called.set(true);
+    ///     100
+    /// });
+    /// assert_eq!(map.get("a"), Some(&1));
+    /// assert_eq!(called.get(), false);
+    /// ```
     pub fn get_or_insert_with<K: AsBytes, F>(&mut self, key: K, f: F) -> &mut T
     where
         F: FnOnce() -> T,
@@ -499,6 +1396,20 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns all keys that start with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let keys = map.keys_starting_with("app");
+    /// assert_eq!(keys.len(), 2);
+    /// ```
     pub fn keys_starting_with<K: AsBytes>(&self, prefix: K) -> Vec<Vec<u8>> {
         let bytes = prefix.as_bytes();
         let mut result = Vec::new();
@@ -511,6 +1422,23 @@ impl<T> TrieMap<T> {
         result
     }
 
+    /// Updates a value if the key exists.
+    ///
+    /// Returns `None` if the key exists and the value was updated, or `None` if the key doesn't exist.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// map.update("a", |v| *v *= 2);
+    /// assert_eq!(map.get("a"), Some(&2));
+    ///
+    /// map.update("b", |v| *v *= 2);
+    /// assert_eq!(map.get("b"), None);
+    /// ```
     pub fn update<K: AsBytes, F>(&mut self, key: K, f: F) -> Option<T>
     where
         F: FnOnce(&mut T),
@@ -523,6 +1451,21 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Updates a value if the key exists, otherwise inserts a new value.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// map.update_or_insert("a", |v| *v *= 2, || 0);
+    /// assert_eq!(map.get("a"), Some(&2));
+    ///
+    /// map.update_or_insert("b", |v| *v *= 2, || 3);
+    /// assert_eq!(map.get("b"), Some(&3));
+    /// ```
     pub fn update_or_insert<K: AsBytes, F, G>(&mut self, key: K, update: F, insert: G) -> &mut T
     where
         F: FnOnce(&mut T),
@@ -537,6 +1480,19 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Creates a new map with the given key-value pair added.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let map1 = TrieMap::new();
+    /// let map2 = map1.inserted("a", 1);
+    ///
+    /// assert_eq!(map1.len(), 0);
+    /// assert_eq!(map2.len(), 1);
+    /// assert_eq!(map2.get("a"), Some(&1));
+    /// ```
     pub fn inserted<K: AsBytes>(&self, key: K, value: T) -> Self
     where
         T: Clone,
@@ -546,6 +1502,23 @@ impl<T> TrieMap<T> {
         new_map
     }
 
+    /// Creates a new map with the given key removed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("a", 1);
+    /// map1.insert("b", 2);
+    ///
+    /// let map2 = map1.removed("a");
+    ///
+    /// assert_eq!(map1.len(), 2);
+    /// assert_eq!(map2.len(), 1);
+    /// assert!(!map2.contains_key("a"));
+    /// assert!(map2.contains_key("b"));
+    /// ```
     pub fn removed<K: AsBytes>(&self, key: K) -> Self
     where
         T: Clone,
@@ -555,6 +1528,25 @@ impl<T> TrieMap<T> {
         new_map
     }
 
+    /// Creates a new map without any entries that match the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("apple", 1);
+    /// map1.insert("application", 2);
+    /// map1.insert("banana", 3);
+    ///
+    /// let map2 = map1.without_prefix("app");
+    ///
+    /// assert_eq!(map1.len(), 3);
+    /// assert_eq!(map2.len(), 1);
+    /// assert!(!map2.contains_key("apple"));
+    /// assert!(!map2.contains_key("application"));
+    /// assert!(map2.contains_key("banana"));
+    /// ```
     pub fn without_prefix<K: AsBytes>(&self, prefix: K) -> Self
     where
         T: Clone,
@@ -564,6 +1556,25 @@ impl<T> TrieMap<T> {
         new_map
     }
 
+    /// Creates a new map with only entries that match the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map1 = TrieMap::new();
+    /// map1.insert("apple", 1);
+    /// map1.insert("application", 2);
+    /// map1.insert("banana", 3);
+    ///
+    /// let map2 = map1.with_prefix_only("app");
+    ///
+    /// assert_eq!(map1.len(), 3);
+    /// assert_eq!(map2.len(), 2);
+    /// assert!(map2.contains_key("apple"));
+    /// assert!(map2.contains_key("application"));
+    /// assert!(!map2.contains_key("banana"));
+    /// ```
     pub fn with_prefix_only<K: AsBytes>(&self, prefix: K) -> Self
     where
         T: Clone,
@@ -587,6 +1598,27 @@ impl<T> TrieMap<T> {
         self.into_iter()
     }
 
+    /// Retains only the elements specified by the predicate.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    /// map.insert("c", 3);
+    /// map.insert("d", 4);
+    ///
+    /// // Keep only entries with even values
+    /// map.retain(|_, v| *v % 2 == 0);
+    ///
+    /// assert_eq!(map.len(), 2);
+    /// assert!(!map.contains_key("a"));
+    /// assert!(map.contains_key("b"));
+    /// assert!(!map.contains_key("c"));
+    /// assert!(map.contains_key("d"));
+    /// ```
     pub fn retain<F>(&mut self, mut f: F)
     where
         F: FnMut(&[u8], &mut T) -> bool,
@@ -609,7 +1641,26 @@ impl<T> TrieMap<T> {
             self.remove(&key);
         }
     }
-
+    /// Returns an entry representing a key in the map.
+    ///
+    /// The entry can be used to insert, remove, or modify the value associated with the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    ///
+    /// // Insert a value if the key doesn't exist
+    /// map.entry("a").or_insert(1);
+    ///
+    /// // Update a value if the key exists
+    /// if let Entry::Occupied(mut occupied) = map.entry("a") {
+    ///     *occupied.get_mut() += 10;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&11));
+    /// ```
     pub fn entry<K: AsBytes>(&mut self, key: K) -> Entry<'_, T> {
         let key_bytes = key.as_bytes().to_vec();
 
@@ -649,6 +1700,15 @@ impl<T> TrieMap<T> {
         })
     }
 
+    /// Creates a new empty `TrieMap`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let map: TrieMap<i32> = TrieMap::new();
+    /// assert!(map.is_empty());
+    /// ```
     pub fn new() -> Self {
         TrieMap {
             data: Vec::new(),
@@ -658,6 +1718,18 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Creates a new `TrieMap` with the specified capacity.
+    ///
+    /// The map will be able to hold at least `capacity` elements without
+    /// reallocating.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let map: TrieMap<i32> = TrieMap::with_capacity(10);
+    /// assert!(map.is_empty());
+    /// ```
     pub fn with_capacity(capacity: usize) -> Self {
         TrieMap {
             data: Vec::with_capacity(capacity),
@@ -667,14 +1739,51 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns the number of elements in the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// assert_eq!(map.len(), 0);
+    ///
+    /// map.insert("a", 1);
+    /// assert_eq!(map.len(), 1);
+    /// ```
     pub fn len(&self) -> usize {
         self.size
     }
 
+    /// Returns `true` if the map contains no elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// assert!(map.is_empty());
+    ///
+    /// map.insert("a", 1);
+    /// assert!(!map.is_empty());
+    /// ```
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
 
+    /// Removes all elements from the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// map.clear();
+    /// assert!(map.is_empty());
+    /// ```
     pub fn clear(&mut self) {
         self.data.clear();
         self.free_indices.clear();
@@ -682,7 +1791,21 @@ impl<T> TrieMap<T> {
         self.size = 0;
     }
 
-    pub fn insert<K: AsBytes>(&mut self, key: K, value: T) -> Option<usize> {
+    /// Inserts a key-value pair into the map.
+    ///
+    /// This method inserts a value associated with a key into the map.
+    /// If the key already exists, its value is updated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("a", 2); // Updates the existing value
+    /// assert_eq!(map.get("a"), Some(&2));
+    /// ```
+    pub fn insert<K: AsBytes>(&mut self, key: K, value: T) {
         let bytes = key.as_bytes();
         let mut current = &mut self.root;
 
@@ -704,7 +1827,6 @@ impl<T> TrieMap<T> {
                 }
 
                 current.children = new_children.into_boxed_slice();
-
                 set_bit(&mut current.is_present, byte);
             }
 
@@ -712,23 +1834,41 @@ impl<T> TrieMap<T> {
         }
 
         let idx = if let Some(free_idx) = self.free_indices.pop() {
+            // Use a previously freed index
             self.data[free_idx] = Some(value);
             free_idx
         } else {
+            // No free indices, add to the end
             self.data.push(Some(value));
             self.data.len() - 1
         };
 
         let prev_idx = current.data_idx;
+
+        // Update node to point to the new data index
         current.data_idx = Some(idx);
 
+        // If this is a new key, increment size
         if prev_idx.is_none() {
             self.size += 1;
+        } else if let Some(prev_idx) = prev_idx {
+            // Free the previous index for reuse
+            self.data[prev_idx] = None;
+            self.free_indices.push(prev_idx);
         }
-
-        prev_idx
     }
 
+    /// Returns a reference to the value corresponding to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// assert_eq!(map.get("a"), Some(&1));
+    /// assert_eq!(map.get("b"), None);
+    /// ```
     pub fn get<K: AsBytes>(&self, key: K) -> Option<&T> {
         let bytes = key.as_bytes();
         let mut current = &self.root;
@@ -749,6 +1889,21 @@ impl<T> TrieMap<T> {
         current.data_idx.and_then(|idx| self.data[idx].as_ref())
     }
 
+    /// Returns a mutable reference to the value corresponding to the key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// if let Some(value) = map.get_mut("a") {
+    ///     *value = 10;
+    /// }
+    ///
+    /// assert_eq!(map.get("a"), Some(&10));
+    /// ```
     pub fn get_mut<K: AsBytes>(&mut self, key: K) -> Option<&mut T> {
         let bytes = key.as_bytes();
         let mut current = &self.root;
@@ -773,10 +1928,34 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns `true` if the map contains a value for the specified key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// assert!(map.contains_key("a"));
+    /// assert!(!map.contains_key("b"));
+    /// ```
     pub fn contains_key<K: AsBytes>(&self, key: K) -> bool {
         self.get(key).is_some()
     }
 
+    /// Returns `true` if the map contains any keys starting with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    ///
+    /// assert!(map.starts_with("app"));
+    /// assert!(!map.starts_with("ban"));
+    /// ```
     pub fn starts_with<K: AsBytes>(&self, prefix: K) -> bool {
         let bytes = prefix.as_bytes();
 
@@ -788,6 +1967,20 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns all key-value pairs for keys that start with the given prefix.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let matches = map.get_prefix_matches("app");
+    /// assert_eq!(matches.len(), 2);
+    /// ```
     pub fn get_prefix_matches<'a, K: AsBytes>(&'a self, prefix: K) -> Vec<(Vec<u8>, &'a T)> {
         let bytes = prefix.as_bytes();
         let mut result = Vec::new();
@@ -800,6 +1993,23 @@ impl<T> TrieMap<T> {
         result
     }
 
+    /// Removes all entries where the key starts with the given prefix.
+    ///
+    /// Returns the removed key-value pairs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    /// map.insert("banana", 3);
+    ///
+    /// let removed = map.remove_prefix_matches("app");
+    /// assert_eq!(removed.len(), 2);
+    /// assert_eq!(map.len(), 1);
+    /// ```
     pub fn remove_prefix_matches<K: AsBytes>(&mut self, prefix: K) -> Vec<(Vec<u8>, T)> {
         let bytes = prefix.as_bytes();
         let mut result = Vec::new();
@@ -912,6 +2122,18 @@ impl<T> TrieMap<T> {
         false
     }
 
+    /// Removes a key from the map, returning the value at the key if the key was previously in the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// assert_eq!(map.remove("a"), Some(1));
+    /// assert_eq!(map.remove("a"), None);
+    /// ```
     pub fn remove<K: AsBytes>(&mut self, key: K) -> Option<T> {
         let bytes = key.as_bytes();
         if bytes.is_empty() {
@@ -943,48 +2165,68 @@ impl<T> TrieMap<T> {
         }
 
         if let Some(idx) = current.data_idx {
-            self.size -= 1;
+            if self.data[idx].is_some() {
+                self.size -= 1;
 
-            self.free_indices.push(idx);
+                self.free_indices.push(idx);
 
-            let value = self.data[idx].take();
+                let value = self.data[idx].take();
 
-            let mut delete_child = true;
+                let mut delete_child = true;
 
-            for depth in (0..path.len()).rev() {
-                let byte = path[depth];
-                let child_idx = path_indices[depth];
+                for depth in (0..path.len()).rev() {
+                    let byte = path[depth];
+                    let child_idx = path_indices[depth];
 
-                let mut current = &mut self.root;
-                for i in 0..depth {
-                    current = &mut current.children[path_indices[i]];
-                }
-
-                let child = &current.children[child_idx];
-                if delete_child && child.data_idx.is_none() && child.children.is_empty() {
-                    let mut new_children = Vec::with_capacity(current.children.len() - 1);
-                    for i in 0..current.children.len() {
-                        if i != child_idx {
-                            new_children
-                                .push(std::mem::replace(&mut current.children[i], TrieNode::new()));
-                        }
+                    let mut current = &mut self.root;
+                    for i in 0..depth {
+                        current = &mut current.children[path_indices[i]];
                     }
-                    current.children = new_children.into_boxed_slice();
 
-                    clear_bit(&mut current.is_present, byte);
+                    let child = &current.children[child_idx];
+                    if delete_child && child.data_idx.is_none() && child.children.is_empty() {
+                        let mut new_children = Vec::with_capacity(current.children.len() - 1);
+                        for i in 0..current.children.len() {
+                            if i != child_idx {
+                                new_children.push(std::mem::replace(
+                                    &mut current.children[i],
+                                    TrieNode::new(),
+                                ));
+                            }
+                        }
+                        current.children = new_children.into_boxed_slice();
 
-                    delete_child = current.data_idx.is_none() && current.children.is_empty();
-                } else {
-                    delete_child = false;
+                        clear_bit(&mut current.is_present, byte);
+
+                        delete_child = current.data_idx.is_none() && current.children.is_empty();
+                    } else {
+                        delete_child = false;
+                    }
                 }
-            }
 
-            value
+                value
+            } else {
+                None
+            }
         } else {
             None
         }
     }
 
+    /// Returns an iterator over the key-value pairs of the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for (key, value) in map.iter() {
+    ///     println!("{}: {}", String::from_utf8_lossy(&key), value);
+    /// }
+    /// ```
     pub fn iter<'a>(&'a self) -> Iter<'a, T> {
         let mut pairs = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
@@ -1019,27 +2261,106 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns an iterator over the keys of the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for key in map.keys() {
+    ///     println!("Key: {}", String::from_utf8_lossy(&key));
+    /// }
+    /// ```
     pub fn keys<'a>(&'a self) -> Keys<'a, T> {
         Keys { inner: self.iter() }
     }
 
+    /// Returns an iterator over the values of the map.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// for value in map.values() {
+    ///     println!("Value: {}", value);
+    /// }
+    /// ```
     pub fn values<'a>(&'a self) -> Values<'a, T> {
         Values { inner: self.iter() }
     }
 
+    /// Shrinks the capacity of the map as much as possible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::with_capacity(100);
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// map.shrink_to_fit();
+    /// ```
     pub fn shrink_to_fit(&mut self) {
         self.data.shrink_to_fit();
         self.free_indices.shrink_to_fit();
     }
 
+    /// Returns the number of elements the map can hold without reallocating.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let map: TrieMap<i32> = TrieMap::with_capacity(100);
+    /// assert!(map.capacity() >= 100);
+    /// ```
     pub fn capacity(&self) -> usize {
         self.data.capacity()
     }
 
+    /// Reserves capacity for at least `additional` more elements.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map : TrieMap<()> = TrieMap::new();
+    /// map.reserve(100);
+    /// ```
     pub fn reserve(&mut self, additional: usize) {
         self.data.reserve(additional);
     }
 
+    /// Tries to insert a key-value pair into the map.
+    ///
+    /// If the map did not have this key present, the value is inserted and `Ok(&mut T)` is returned.
+    ///
+    /// If the map did have this key present, the value is not updated, and `Err(T)` is returned
+    /// containing the value passed.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    ///
+    /// // First insertion succeeds
+    /// assert!(map.try_insert("a", 1).is_ok());
+    ///
+    /// // Second insertion fails
+    /// assert!(map.try_insert("a", 2).is_err());
+    ///
+    /// assert_eq!(map.get("a"), Some(&1));
+    /// ```
     pub fn try_insert<K: AsBytes>(&mut self, key: K, value: T) -> Result<&mut T, T> {
         match self.entry(key) {
             Entry::Vacant(entry) => Ok(entry.insert(value)),
@@ -1047,12 +2368,40 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Returns the key-value pair corresponding to the supplied key.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// assert!(map.get_key_value("a").is_some());
+    /// let (key, &value) = map.get_key_value("a").unwrap();
+    /// assert_eq!(String::from_utf8_lossy(&key), "a");
+    /// assert_eq!(value, 1);
+    /// ```
     pub fn get_key_value<K: AsBytes + Clone>(&self, key: K) -> Option<(Vec<u8>, &T)> {
         let k2 = key.clone();
         let bytes = key.as_bytes();
         self.get(k2).map(|value| (bytes.to_vec(), value))
     }
 
+    /// Removes all key-value pairs from the map, returning them as an iterator.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// let drained: Vec<_> = map.drain().collect();
+    /// assert_eq!(drained.len(), 2);
+    /// assert_eq!(map.len(), 0);
+    /// ```
     pub fn drain(&mut self) -> DrainIter<T> {
         let mut keys = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
@@ -1084,6 +2433,25 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Gets an entry for a key reference.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::{TrieMap, Entry};
+    /// let mut map = TrieMap::new();
+    /// let key = "test_key".to_string();
+    ///
+    /// // First, insert a value
+    /// map.entry_ref(&key).or_insert(1);
+    /// assert_eq!(map.get(&key), Some(&1));
+    ///
+    /// // Then, update it
+    /// if let Entry::Occupied(mut occupied) = map.entry_ref(&key) {
+    ///     *occupied.get_mut() = 2;
+    /// }
+    /// assert_eq!(map.get(&key), Some(&2));
+    /// ```
     pub fn entry_ref<'a, K: AsBytes + ?Sized>(&'a mut self, key: &'a K) -> Entry<'a, T> {
         let key_bytes = key.as_bytes().to_vec();
 
@@ -1122,18 +2490,49 @@ impl<T> TrieMap<T> {
         })
     }
 
+    /// Converts the map into an iterator over keys.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// let keys: Vec<_> = map.into_keys().collect();
+    /// assert_eq!(keys.len(), 2);
+    /// ```
     pub fn into_keys(self) -> IntoKeys<T> {
         IntoKeys {
             inner: self.into_iter(),
         }
     }
 
+    /// Converts the map into an iterator over values.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    /// map.insert("b", 2);
+    ///
+    /// let values: Vec<_> = map.into_values().collect();
+    /// assert_eq!(values.len(), 2);
+    /// ```
     pub fn into_values(self) -> IntoValues<T> {
         IntoValues {
             inner: self.into_iter(),
         }
     }
 }
+/// A draining iterator over the key-value pairs of a `TrieMap`.
+///
+/// This struct is created by the [`drain`] method on [`TrieMap`].
+///
+/// [`drain`]: TrieMap::drain
 pub struct DrainIter<'a, T> {
     trie_map: &'a mut TrieMap<T>,
     keys: Vec<Vec<u8>>,
@@ -1168,6 +2567,11 @@ impl<'a, T> Drop for DrainIter<'a, T> {
     }
 }
 
+/// An owning iterator over the keys of a `TrieMap`.
+///
+/// This struct is created by the [`into_keys`] method on [`TrieMap`].
+///
+/// [`into_keys`]: TrieMap::into_keys
 pub struct IntoKeys<T> {
     inner: IntoIter<T>,
 }
@@ -1184,6 +2588,11 @@ impl<T> Iterator for IntoKeys<T> {
     }
 }
 
+/// An owning iterator over the values of a `TrieMap`.
+///
+/// This struct is created by the [`into_values`] method on [`TrieMap`].
+///
+/// [`into_values`]: TrieMap::into_values
 pub struct IntoValues<T> {
     inner: IntoIter<T>,
 }
@@ -1200,6 +2609,11 @@ impl<T> Iterator for IntoValues<T> {
     }
 }
 
+/// An iterator over the key-value pairs of a `TrieMap`.
+///
+/// This struct is created by the [`iter`] method on [`TrieMap`].
+///
+/// [`iter`]: TrieMap::iter
 pub struct Iter<'a, T> {
     pairs: Vec<(Vec<u8>, &'a T)>,
     position: usize,
@@ -1222,6 +2636,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
+/// An iterator over the keys of a `TrieMap`.
+///
+/// This struct is created by the [`keys`] method on [`TrieMap`].
+///
+/// [`keys`]: TrieMap::keys
 pub struct Keys<'a, T> {
     inner: Iter<'a, T>,
 }
@@ -1234,6 +2653,11 @@ impl<'a, T> Iterator for Keys<'a, T> {
     }
 }
 
+/// An iterator over the values of a `TrieMap`.
+///
+/// This struct is created by the [`values`] method on [`TrieMap`].
+///
+/// [`values`]: TrieMap::values
 pub struct Values<'a, T> {
     inner: Iter<'a, T>,
 }
@@ -1255,6 +2679,124 @@ impl<const N: usize> AsBytes for [u8; N] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_prefix_iterators() {
+        let mut map = TrieMap::new();
+        map.insert("apple", 1);
+        map.insert("application", 2);
+        map.insert("banana", 3);
+        map.insert("app", 4);
+
+        // Test prefix_iter
+        let mut iter = map.prefix_iter("app").collect::<Vec<_>>();
+        iter.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+
+        assert_eq!(iter.len(), 3);
+        assert_eq!(String::from_utf8(iter[0].0.clone()).unwrap(), "app");
+        assert_eq!(*iter[0].1, 4);
+        assert_eq!(String::from_utf8(iter[1].0.clone()).unwrap(), "apple");
+        assert_eq!(*iter[1].1, 1);
+        assert_eq!(String::from_utf8(iter[2].0.clone()).unwrap(), "application");
+        assert_eq!(*iter[2].1, 2);
+
+        // Test prefix_keys
+        let mut keys = map.prefix_keys("app").collect::<Vec<_>>();
+        keys.sort();
+
+        assert_eq!(keys.len(), 3);
+        assert_eq!(String::from_utf8(keys[0].clone()).unwrap(), "app");
+        assert_eq!(String::from_utf8(keys[1].clone()).unwrap(), "apple");
+        assert_eq!(String::from_utf8(keys[2].clone()).unwrap(), "application");
+
+        // Test prefix_values
+        let mut values = map.prefix_values("app").collect::<Vec<_>>();
+        values.sort();
+
+        assert_eq!(values, vec![&1, &2, &4]);
+    }
+
+    #[test]
+    fn test_intersect() {
+        let mut map1 = TrieMap::new();
+        map1.insert("a", 1);
+        map1.insert("b", 2);
+        map1.insert("c", 3);
+
+        let mut map2 = TrieMap::new();
+        map2.insert("b", 20);
+        map2.insert("c", 30);
+        map2.insert("d", 40);
+
+        let intersection = map1.intersect(map2);
+        assert_eq!(intersection.len(), 2);
+        assert_eq!(intersection.get("b"), Some(&2)); // Value from map1
+        assert_eq!(intersection.get("c"), Some(&3)); // Value from map1
+        assert!(intersection.get("a").is_none());
+        assert!(intersection.get("d").is_none());
+    }
+
+    #[test]
+    fn test_difference() {
+        let mut map1 = TrieMap::new();
+        map1.insert("a", 1);
+        map1.insert("b", 2);
+        map1.insert("c", 3);
+
+        let mut map2 = TrieMap::new();
+        map2.insert("b", 20);
+        map2.insert("d", 40);
+
+        let difference = map1.difference(map2);
+        assert_eq!(difference.len(), 2);
+        assert_eq!(difference.get("a"), Some(&1));
+        assert_eq!(difference.get("c"), Some(&3));
+        assert!(difference.get("b").is_none());
+        assert!(difference.get("d").is_none());
+    }
+
+    #[test]
+    fn test_union() {
+        let mut map1 = TrieMap::new();
+        map1.insert("a", 1);
+        map1.insert("b", 2);
+
+        let mut map2 = TrieMap::new();
+        map2.insert("b", 20);
+        map2.insert("c", 30);
+
+        let union = map1.union(map2);
+        assert_eq!(union.len(), 3);
+        assert_eq!(union.get("a"), Some(&1));
+        assert_eq!(union.get("b"), Some(&20)); // Value from map2
+        assert_eq!(union.get("c"), Some(&30));
+    }
+
+    #[test]
+    fn test_subset() {
+        let mut map1 = TrieMap::new();
+        map1.insert("a", 1);
+        map1.insert("b", 2);
+
+        let mut map2 = TrieMap::new();
+        map2.insert("a", 10);
+        map2.insert("b", 20);
+        map2.insert("c", 30);
+
+        assert!(map1.is_subset_of(&map2));
+        assert!(!map2.is_subset_of(&map1));
+
+        let mut map3 = TrieMap::new();
+        map3.insert("a", 1);
+        map3.insert("b", 2);
+
+        assert!(map1.is_subset_of(&map3));
+        assert!(map3.is_subset_of(&map1));
+
+        assert!(!map1.is_proper_subset_of(&map3));
+        assert!(!map3.is_proper_subset_of(&map1));
+        assert!(map1.is_proper_subset_of(&map2));
+    }
 
     #[test]
     fn test_add_find() {
