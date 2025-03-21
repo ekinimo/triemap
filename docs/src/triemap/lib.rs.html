@@ -4034,93 +4034,99 @@
 <a href="#4033" id="4033">4033</a>
 <a href="#4034" id="4034">4034</a>
 <a href="#4035" id="4035">4035</a>
-<a href="#4036" id="4036">4036</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::iter::FromIterator;
+<a href="#4036" id="4036">4036</a>
+<a href="#4037" id="4037">4037</a>
+<a href="#4038" id="4038">4038</a>
+<a href="#4039" id="4039">4039</a>
+<a href="#4040" id="4040">4040</a></pre></div><pre class="rust"><code><span class="kw">use </span>std::iter::{FlatMap, FromIterator};
 
 <span class="kw">use </span>std::hash::{Hash, Hasher};
-
-<span class="doccomment">/// A mutable iterator over the values of a `TrieMap`.
+<span class="comment">/*
+/// A mutable iterator over the values of a `TrieMap`.
 ///
 /// This struct is created by the [`values_mut`] method on [`TrieMap`].
 ///
 /// [`values_mut`]: TrieMap::values_mut
-</span><span class="kw">pub struct </span>ValuesMut&lt;<span class="lifetime">'a</span>, T&gt; {
-    trie: <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>TrieMap&lt;T&gt;,
-    indices: Vec&lt;usize&gt;,
-    position: usize,
+pub struct ValuesMut&lt;'a, T&gt; {
+    data: std::iter::FlatMap&lt;IterMut&lt;'a, Option&lt;T&gt;&gt;, IterMut&lt;'a, T&gt;&gt;, /*indices: Vec&lt;usize&gt;,
+                                                                      position: usize,*/
 }
+*/
+/*
+impl&lt;'a, T&gt; Iterator for ValuesMut&lt;'a, T&gt; {
+    type Item = &amp;'a mut T;
 
-<span class="kw">impl</span>&lt;<span class="lifetime">'a</span>, T&gt; Iterator <span class="kw">for </span>ValuesMut&lt;<span class="lifetime">'a</span>, T&gt; {
-    <span class="kw">type </span>Item = <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>T;
+    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt; {
+        if self.position &lt; self.indices.len() {
+            let idx = self.indices[self.position];
+            self.position += 1;
 
-    <span class="kw">fn </span>next(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt; {
-        <span class="kw">if </span><span class="self">self</span>.position &lt; <span class="self">self</span>.indices.len() {
-            <span class="kw">let </span>idx = <span class="self">self</span>.indices[<span class="self">self</span>.position];
-            <span class="self">self</span>.position += <span class="number">1</span>;
-
-            <span class="comment">// We know this is valid because we collected valid indices
-            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">ref mut </span>value) = <span class="self">self</span>.trie.data[idx] {
-                <span class="comment">// We need to convert this mutable reference to one with the right lifetime
+            // We know this is valid because we collected valid indices
+            if let Some(ref mut value) = self.trie.data[idx] {
+                // We need to convert this mutable reference to one with the right lifetime
                 // This is safe because we only return each index once and indices are unique
-                </span><span class="kw">let </span>value_ptr = value <span class="kw">as </span><span class="kw-2">*mut </span>T;
-                <span class="prelude-val">Some</span>(<span class="kw">unsafe </span>{ <span class="kw-2">&amp;mut *</span>value_ptr })
-            } <span class="kw">else </span>{
-                <span class="comment">// This should not happen in normal operation, but handle it just in case
-                </span><span class="self">self</span>.next()
+                let value_ptr = value as *mut T;
+                Some(unsafe { &amp;mut *value_ptr })
+            } else {
+                // This should not happen in normal operation, but handle it just in case
+                self.next()
             }
-        } <span class="kw">else </span>{
-            <span class="prelude-val">None
-        </span>}
+        } else {
+            None
+        }
     }
 
-    <span class="kw">fn </span>size_hint(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, <span class="prelude-ty">Option</span>&lt;usize&gt;) {
-        <span class="kw">let </span>remaining = <span class="self">self</span>.indices.len() - <span class="self">self</span>.position;
-        (remaining, <span class="prelude-val">Some</span>(remaining))
+    fn size_hint(&amp;self) -&gt; (usize, Option&lt;usize&gt;) {
+        let remaining = self.indices.len() - self.position;
+        (remaining, Some(remaining))
     }
 }
 
-<span class="doccomment">/// A mutable iterator over the key-value pairs of a `TrieMap`.
+
+/// A mutable iterator over the key-value pairs of a `TrieMap`.
 ///
 /// This struct is created by the [`iter_mut`] method on [`TrieMap`].
 ///
 /// [`iter_mut`]: TrieMap::iter_mut
-</span><span class="kw">pub struct </span>IterMut&lt;<span class="lifetime">'a</span>, T&gt; {
-    trie: <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>TrieMap&lt;T&gt;,
+pub struct IterMut&lt;'a, T&gt; {
+trie: &amp;'a mut TrieMap&lt;T&gt;,
     keys_indices: Vec&lt;(Vec&lt;u8&gt;, usize)&gt;,
     position: usize,
 }
 
-<span class="kw">impl</span>&lt;<span class="lifetime">'a</span>, T&gt; Iterator <span class="kw">for </span>IterMut&lt;<span class="lifetime">'a</span>, T&gt; {
-    <span class="kw">type </span>Item = (Vec&lt;u8&gt;, <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>T);
+impl&lt;'a, T&gt; Iterator for IterMut&lt;'a, T&gt; {
+    type Item = (Vec&lt;u8&gt;, &amp;'a mut T);
 
-    <span class="kw">fn </span>next(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; <span class="prelude-ty">Option</span>&lt;<span class="self">Self</span>::Item&gt; {
-        <span class="kw">if </span><span class="self">self</span>.position &lt; <span class="self">self</span>.keys_indices.len() {
-            <span class="kw">let </span>(key, idx) = <span class="kw-2">&amp;</span><span class="self">self</span>.keys_indices[<span class="self">self</span>.position];
-            <span class="self">self</span>.position += <span class="number">1</span>;
+    fn next(&amp;mut self) -&gt; Option&lt;Self::Item&gt; {
+        if self.position &lt; self.keys_indices.len() {
+            let (key, idx) = &amp;self.keys_indices[self.position];
+            self.position += 1;
 
-            <span class="kw">let </span>key_clone = key.clone();
+            let key_clone = key.clone();
 
-            <span class="comment">// We know this is valid because we collected valid indices
-            </span><span class="kw">if let </span><span class="prelude-val">Some</span>(<span class="kw-2">ref mut </span>value) = <span class="self">self</span>.trie.data[<span class="kw-2">*</span>idx] {
-                <span class="comment">// We need to convert this mutable reference to one with the right lifetime
+            // We know this is valid because we collected valid indices
+            if let Some(ref mut value) = self.trie.data[*idx] {
+                // We need to convert this mutable reference to one with the right lifetime
                 // This is safe because we only return each index once and indices are unique
-                </span><span class="kw">let </span>value_ptr = value <span class="kw">as </span><span class="kw-2">*mut </span>T;
-                <span class="prelude-val">Some</span>((key_clone, <span class="kw">unsafe </span>{ <span class="kw-2">&amp;mut *</span>value_ptr }))
-            } <span class="kw">else </span>{
-                <span class="comment">// This should not happen in normal operation, but handle it just in case
-                </span><span class="self">self</span>.next()
+                let value_ptr = value as *mut T;
+                Some((key_clone, unsafe { &amp;mut *value_ptr }))
+            } else {
+                // This should not happen in normal operation, but handle it just in case
+                self.next()
             }
-        } <span class="kw">else </span>{
-            <span class="prelude-val">None
-        </span>}
+        } else {
+            None
+        }
     }
 
-    <span class="kw">fn </span>size_hint(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; (usize, <span class="prelude-ty">Option</span>&lt;usize&gt;) {
-        <span class="kw">let </span>remaining = <span class="self">self</span>.keys_indices.len() - <span class="self">self</span>.position;
-        (remaining, <span class="prelude-val">Some</span>(remaining))
+    fn size_hint(&amp;self) -&gt; (usize, Option&lt;usize&gt;) {
+        let remaining = self.keys_indices.len() - self.position;
+        (remaining, Some(remaining))
     }
 }
+*/
 
-<span class="doccomment">/// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
+</span><span class="doccomment">/// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
 ///
 /// # Features
@@ -4981,19 +4987,18 @@
     /// assert_eq!(map.get("a"), Some(&amp;11));
     /// assert_eq!(map.get("b"), Some(&amp;12));
     /// ```
-    </span><span class="kw">pub fn </span>iter_mut(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; IterMut&lt;<span class="lifetime">'_</span>, T&gt; {
+    </span><span class="kw">pub fn </span>iter_mut&lt;<span class="lifetime">'a</span>&gt;(<span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span><span class="self">self</span>) -&gt; <span class="kw">impl </span>Iterator&lt;Item = (Vec&lt;u8&gt;, <span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="kw-2">mut </span>T)&gt; + <span class="lifetime">'a </span>{
         <span class="kw">let </span><span class="kw-2">mut </span>keys_indices = Vec::with_capacity(<span class="self">self</span>.size);
         <span class="kw">let </span><span class="kw-2">mut </span>current_key = Vec::new();
-
         <span class="self">Self</span>::collect_keys_indices(<span class="kw-2">&amp;</span><span class="self">self</span>.root, <span class="kw-2">&amp;mut </span>current_key, <span class="kw-2">&amp;mut </span>keys_indices);
+        <span class="kw">let </span>map: std::collections::HashMap&lt;<span class="kw">_</span>, <span class="kw">_</span>&gt; =
+            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
 
-        IterMut {
-            trie: <span class="self">self</span>,
-            keys_indices,
-            position: <span class="number">0</span>,
-        }
+        <span class="self">self</span>.data
+            .iter_mut()
+            .enumerate()
+            .filter_map(<span class="kw">move </span>|(idx, opt)| opt.as_mut().map(|value| (map[<span class="kw-2">&amp;</span>idx].clone(), value)))
     }
-
     <span class="doccomment">/// Private helper to collect all keys and their associated data indices
     </span><span class="kw">fn </span>collect_keys_indices(
         node: <span class="kw-2">&amp;</span>TrieNode,
@@ -5034,21 +5039,23 @@
     /// assert_eq!(map.get("a"), Some(&amp;2));
     /// assert_eq!(map.get("b"), Some(&amp;4));
     /// ```
-    </span><span class="kw">pub fn </span>values_mut(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; ValuesMut&lt;<span class="lifetime">'_</span>, T&gt; {
+    </span><span class="kw">pub fn </span>values_mut(<span class="kw-2">&amp;mut </span><span class="self">self</span>) -&gt; std::iter::Flatten&lt;std::slice::IterMut&lt;<span class="lifetime">'_</span>, <span class="prelude-ty">Option</span>&lt;T&gt;&gt;&gt; {
         <span class="comment">// Collect indices of all values
-        </span><span class="kw">let </span><span class="kw-2">mut </span>indices = Vec::with_capacity(<span class="self">self</span>.size);
+        /*let mut indices = Vec::with_capacity(self.size);
 
-        <span class="kw">for </span>i <span class="kw">in </span><span class="number">0</span>..<span class="self">self</span>.data.len() {
-            <span class="kw">if </span><span class="self">self</span>.data[i].is_some() {
+        for i in 0..self.data.len() {
+            if self.data[i].is_some() {
                 indices.push(i);
             }
         }
 
         ValuesMut {
-            trie: <span class="self">self</span>,
+            trie: self,
             indices,
-            position: <span class="number">0</span>,
-        }
+            position: 0,
+        }*/
+
+        </span><span class="self">self</span>.data.iter_mut().flatten()
     }
 
     <span class="doccomment">/// Returns an iterator over all key-value pairs with keys that start with the given prefix.
@@ -5999,6 +6006,7 @@
     /// map.insert("a", 1);
     /// map.insert("a", 2); // Updates the existing value
     /// assert_eq!(map.get("a"), Some(&amp;2));
+    /// assert_eq!(map.len(),1);
     /// ```
     </span><span class="kw">pub fn </span>insert&lt;K: AsBytes&gt;(<span class="kw-2">&amp;mut </span><span class="self">self</span>, key: K, value: T) {
         <span class="kw">let </span>bytes = key.as_bytes();

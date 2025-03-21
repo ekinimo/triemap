@@ -1,18 +1,18 @@
-use std::iter::FromIterator;
+use std::iter::{FlatMap, FromIterator};
 
 use std::hash::{Hash, Hasher};
-
+/*
 /// A mutable iterator over the values of a `TrieMap`.
 ///
 /// This struct is created by the [`values_mut`] method on [`TrieMap`].
 ///
 /// [`values_mut`]: TrieMap::values_mut
 pub struct ValuesMut<'a, T> {
-    trie: &'a mut TrieMap<T>,
-    indices: Vec<usize>,
-    position: usize,
+    data: std::iter::FlatMap<IterMut<'a, Option<T>>, IterMut<'a, T>>, /*indices: Vec<usize>,
+                                                                      position: usize,*/
 }
-
+*/
+/*
 impl<'a, T> Iterator for ValuesMut<'a, T> {
     type Item = &'a mut T;
 
@@ -42,13 +42,14 @@ impl<'a, T> Iterator for ValuesMut<'a, T> {
     }
 }
 
+
 /// A mutable iterator over the key-value pairs of a `TrieMap`.
 ///
 /// This struct is created by the [`iter_mut`] method on [`TrieMap`].
 ///
 /// [`iter_mut`]: TrieMap::iter_mut
 pub struct IterMut<'a, T> {
-    trie: &'a mut TrieMap<T>,
+trie: &'a mut TrieMap<T>,
     keys_indices: Vec<(Vec<u8>, usize)>,
     position: usize,
 }
@@ -83,6 +84,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
         (remaining, Some(remaining))
     }
 }
+*/
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
@@ -945,19 +947,18 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&11));
     /// assert_eq!(map.get("b"), Some(&12));
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<'_, T> {
+    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Vec<u8>, &'a mut T)> + 'a {
         let mut keys_indices = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
-
         Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
+        let map: std::collections::HashMap<_, _> =
+            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
 
-        IterMut {
-            trie: self,
-            keys_indices,
-            position: 0,
-        }
+        self.data
+            .iter_mut()
+            .enumerate()
+            .filter_map(move |(idx, opt)| opt.as_mut().map(|value| (map[&idx].clone(), value)))
     }
-
     /// Private helper to collect all keys and their associated data indices
     fn collect_keys_indices(
         node: &TrieNode,
@@ -998,9 +999,9 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&2));
     /// assert_eq!(map.get("b"), Some(&4));
     /// ```
-    pub fn values_mut(&mut self) -> ValuesMut<'_, T> {
+    pub fn values_mut(&mut self) -> std::iter::Flatten<std::slice::IterMut<'_, Option<T>>> {
         // Collect indices of all values
-        let mut indices = Vec::with_capacity(self.size);
+        /*let mut indices = Vec::with_capacity(self.size);
 
         for i in 0..self.data.len() {
             if self.data[i].is_some() {
@@ -1012,7 +1013,9 @@ impl<T> TrieMap<T> {
             trie: self,
             indices,
             position: 0,
-        }
+        }*/
+
+        self.data.iter_mut().flatten()
     }
 
     /// Returns an iterator over all key-value pairs with keys that start with the given prefix.
@@ -1963,6 +1966,7 @@ impl<T> TrieMap<T> {
     /// map.insert("a", 1);
     /// map.insert("a", 2); // Updates the existing value
     /// assert_eq!(map.get("a"), Some(&2));
+    /// assert_eq!(map.len(),1);
     /// ```
     pub fn insert<K: AsBytes>(&mut self, key: K, value: T) {
         let bytes = key.as_bytes();
