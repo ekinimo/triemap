@@ -1035,7 +1035,7 @@ impl<T> TrieMap<T> {
     }
 
     /// Converts the map into an iterator over key-value pairs.
-    pub fn into_iter(mut self) -> impl Iterator<Item = (Vec<u8>, T)> {
+    pub fn into_iter(self) -> impl Iterator<Item = (Vec<u8>, T)> {
         let mut keys_indices = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
         Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
