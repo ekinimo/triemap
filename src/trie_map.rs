@@ -722,7 +722,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&11));
     /// assert_eq!(map.get("b"), Some(&12));
     /// ```
-    pub fn iter_mut<'a>(&'a mut self) -> impl Iterator<Item = (Vec<u8>, &'a mut T)> + 'a {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (Vec<u8>, &mut T)> + '_ {
         let mut keys_indices = Vec::with_capacity(self.size);
         let mut current_key = Vec::new();
         Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
@@ -1646,7 +1646,6 @@ impl<T> TrieMap<T> {
     ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
         self.iter()
             .filter(move |(key, _)| other.contains_key(key))
-            .map(|(key, value)| (key, value))
     }
 
     /// Returns an iterator over the entries whose keys are in this map but not in the other map.
@@ -1676,7 +1675,6 @@ impl<T> TrieMap<T> {
     ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
         self.iter()
             .filter(move |(key, _)| !other.contains_key(key))
-            .map(|(key, value)| (key, value))
     }
 
     /// Returns an iterator over entries whose keys are in exactly one of the maps.
@@ -2390,7 +2388,7 @@ mod tests {
                 100
             });
             assert_eq!(*value, 84);
-            assert_eq!(called.get(), false);
+            assert!(!called.get());
         }
     }
 
@@ -2968,7 +2966,7 @@ mod tests {
             });
 
             assert_eq!(*value, 42);
-            assert_eq!(called.get(), false);
+            assert!(!called.get());
         }
     }
 
