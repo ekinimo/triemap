@@ -5,7 +5,7 @@ use std::ops::{Index, IndexMut};
 use crate::as_bytes::AsBytes;
 use crate::entry::{Entry, OccupiedEntry, VacantEntry};
 use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
-use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode};
+use crate::node::{TrieNode, clear_bit, popcount, set_bit, test_bit};
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
@@ -336,7 +336,7 @@ impl<T> TrieMap<T> {
         let bytes = key.as_bytes();
         let mut current = &mut self.root;
 
-        for &byte in bytes {
+        for byte in bytes {
             let idx = popcount(&current.is_present, byte) as usize;
 
             if !test_bit(&current.is_present, byte) {
@@ -400,7 +400,7 @@ impl<T> TrieMap<T> {
         let bytes = key.as_bytes();
         let mut current = &self.root;
 
-        for &byte in bytes {
+        for byte in bytes {
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
@@ -435,7 +435,7 @@ impl<T> TrieMap<T> {
         let bytes = key.as_bytes();
         let mut current = &self.root;
 
-        for &byte in bytes {
+        for byte in bytes {
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
@@ -491,7 +491,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("a"), Some(&11));
     /// ```
     pub fn entry<K: AsBytes>(&mut self, key: K) -> Entry<'_, T> {
-        let key_bytes = key.as_bytes().to_vec();
+        let key_bytes = key.as_bytes().collect();
 
         let mut current = &self.root;
         let mut found = true;
@@ -542,12 +542,12 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.remove("a"), None);
     /// ```
     pub fn remove<K: AsBytes>(&mut self, key: K) -> Option<T> {
-        let bytes = key.as_bytes();
+        let bytes = key.as_bytes_vec();
         if bytes.is_empty() {
             return None;
         }
 
-        self.remove_internal(bytes)
+        self.remove_internal(&bytes)
     }
 
     fn remove_internal(&mut self, bytes: &[u8]) -> Option<T> {
@@ -798,7 +798,7 @@ impl<T> TrieMap<T> {
     pub fn prefix_iter<K: AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
         let mut result = Vec::new();
         if let Some(node) = self.find_node(prefix.as_bytes()) {
-            let mut prefix_vec = prefix.as_bytes().to_vec();
+            let mut prefix_vec = prefix.as_bytes().collect();
             self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
         }
 
@@ -855,10 +855,10 @@ impl<T> TrieMap<T> {
     }
 
     /// Finds a node matching the given prefix
-    fn find_node(&self, bytes: &[u8]) -> Option<&TrieNode> {
+    fn find_node(&self, bytes: impl Iterator<Item = u8>) -> Option<&TrieNode> {
         let mut current = &self.root;
 
-        for &byte in bytes {
+        for byte in bytes {
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
@@ -959,10 +959,11 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn get_prefix_matches<K: AsBytes>(&self, prefix: K) -> Vec<(Vec<u8>, &'_ T)> {
         let bytes = prefix.as_bytes();
+        let bytes2 = prefix.as_bytes();
         let mut result = Vec::new();
 
         if let Some(node) = self.find_node(bytes) {
-            let mut prefix_vec = bytes.to_vec();
+            let mut prefix_vec = bytes2.collect();
             self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
         }
 
@@ -988,11 +989,12 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn remove_prefix_matches<K: AsBytes>(&mut self, prefix: K) -> Vec<(Vec<u8>, T)> {
         let bytes = prefix.as_bytes();
+        let bytes2 = prefix.as_bytes();
         let mut result = Vec::new();
 
         let keys_to_remove = if let Some(node) = self.find_node(bytes) {
             let mut keys = Vec::new();
-            let mut prefix_vec = bytes.to_vec();
+            let mut prefix_vec = bytes2.collect();
             self.collect_keys_with_prefix(node, &mut prefix_vec, &mut keys);
             keys
         } else {
@@ -1109,10 +1111,11 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn keys_starting_with<K: AsBytes>(&self, prefix: K) -> Vec<Vec<u8>> {
         let bytes = prefix.as_bytes();
+        let bytes2 = prefix.as_bytes();
         let mut result = Vec::new();
 
         if let Some(node) = self.find_node(bytes) {
-            let mut prefix_vec = bytes.to_vec();
+            let mut prefix_vec = bytes2.collect();
             self.collect_keys_with_prefix(node, &mut prefix_vec, &mut result);
         }
 
@@ -1139,12 +1142,12 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get(&key), Some(&2));
     /// ```
     pub fn entry_ref<'a, K: AsBytes + ?Sized>(&'a mut self, key: &'a K) -> Entry<'a, T> {
-        let key_bytes = key.as_bytes().to_vec();
+        let key_bytes = key.as_bytes().collect();
 
         let mut current = &self.root;
         let mut found = true;
 
-        for &byte in key.as_bytes() {
+        for byte in key.as_bytes() {
             if !test_bit(&current.is_present, byte) {
                 found = false;
                 break;
@@ -1342,7 +1345,7 @@ impl<T> TrieMap<T> {
     pub fn get_key_value<K: AsBytes + Clone>(&self, key: K) -> Option<(Vec<u8>, &T)> {
         let k2 = key.clone();
         let bytes = key.as_bytes();
-        self.get(k2).map(|value| (bytes.to_vec(), value))
+        self.get(k2).map(|value| (bytes.collect(), value))
     }
 
     /// Gets the given key's corresponding value if it exists, otherwise inserts a default value.
@@ -1568,7 +1571,7 @@ impl<T> TrieMap<T> {
         let mut new_map = TrieMap::new();
 
         if let Some(matches) = self.find_node(prefix.as_bytes()) {
-            let mut prefix_vec = prefix.as_bytes().to_vec();
+            let mut prefix_vec = prefix.as_bytes().collect();
             let mut pairs = Vec::new();
 
             self.collect_prefix_matches(matches, &mut prefix_vec, &mut pairs);
@@ -1836,6 +1839,89 @@ impl<T> TrieMap<T> {
 mod tests {
     use super::*;
     use std::hash::DefaultHasher;
+
+    #[test]
+    fn unsized_nums_keys_will_be_ordered() {
+        let mut trie = TrieMap::new();
+
+        let mut pos: u16 = u16::MIN;
+        let mut neg: u16 = u16::MAX;
+
+        for _ in 0u16..u16::MAX / 2u16 {
+            trie.insert(pos, ());
+            trie.insert(neg, ());
+            pos += 1u16;
+            neg -= 1u16;
+        }
+        let mut last_key = u16::MIN;
+        for k in trie.prefix_keys(0) {
+            let mut key = [0u8; 2];
+            key[0] = k[0];
+            key[1] = k[1];
+
+            let current_key = u16::from_le_bytes(key);
+            assert!(current_key >= last_key);
+            last_key = current_key;
+            //assert_eq!(k, should.as_bytes_vec())
+        }
+    }
+    #[test]
+    fn sized_nums_keys_will_be_ordered_but_wont_respect_the_sign() {
+        let mut trie = TrieMap::new();
+
+        let mut pos: i16 = i16::MIN;
+        let mut neg: i16 = i16::MAX;
+
+        for x in 0i16..i16::MAX / 2i16 {
+            trie.insert(pos, ());
+            trie.insert(neg, ());
+            pos += 1i16;
+            neg -= 1i16;
+        }
+
+        let mut last_key = i16::MIN;
+        for k in trie.prefix_keys(0) {
+            let mut key = [0u8; 2];
+            key[0] = k[0];
+            key[1] = k[1];
+
+            let current_key = i16::from_le_bytes(key);
+            assert!(current_key >= last_key);
+            last_key = current_key;
+            assert!(current_key >= 0);
+            //assert_eq!(k, should.as_bytes_vec())
+        }
+
+        let mut last_key = i16::MIN;
+        for k in trie.prefix_keys(1) {
+            let mut key = [0u8; 2];
+            key[0] = k[0];
+            key[1] = k[1];
+
+            let current_key = i16::from_le_bytes(key);
+            assert!(current_key >= last_key);
+            last_key = current_key;
+            assert!(current_key < 0);
+            //assert_eq!(k, should.as_bytes_vec())
+        }
+    }
+    #[test]
+    fn num_as_key() {
+        let mut trie = TrieMap::new();
+
+        let nums: [u8; 9] = [6u8, 7u8, 5, 8, 4, 9, 3, 1, 2];
+
+        for num in nums {
+            trie.insert(num, ());
+        }
+
+        for (idx, k) in trie.prefix_keys(0).enumerate() {
+            let should = (idx + 1) as u8;
+            assert_eq!(k, should.as_bytes_vec())
+        }
+        //assert!(false)
+    }
+
     #[test]
     fn test_iter_mut() {
         let mut trie = TrieMap::new();
