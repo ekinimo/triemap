@@ -543,9 +543,7 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn remove<K: AsBytes>(&mut self, key: K) -> Option<T> {
         let bytes = key.as_bytes();
-        if bytes.is_empty() {
-            return None;
-        }
+
 
         self.remove_internal(bytes)
     }
