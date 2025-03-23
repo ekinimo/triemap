@@ -1,12 +1,24 @@
+use std::rc::Rc;
+
 /// The `AsBytes` trait allows a type to be used as a key in a `TrieMap`.
 ///
 /// It provides a method to convert the type to a byte slice.
 ///
 pub trait AsBytes {
     /// Converts the value to a byte slice.
-    fn as_bytes(&self) -> impl Iterator<Item = u8>;
+    fn as_bytes(&self) -> impl Iterator<Item = u8> {
+        self.as_bytes_vec().into_iter()
+    }
 
     fn as_bytes_vec(&self) -> Vec<u8> {
+        self.as_bytes().collect()
+    }
+
+    fn as_bytes_boxed(&self) -> Box<[u8]> {
+        self.as_bytes().collect()
+    }
+
+    fn as_bytes_rc(&self) -> Rc<[u8]> {
         self.as_bytes().collect()
     }
 }
