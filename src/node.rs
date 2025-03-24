@@ -1,4 +1,4 @@
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub(crate) struct TrieNode {
     pub(crate) is_present: [u64; 4],
     pub(crate) children: Box<[TrieNode]>,

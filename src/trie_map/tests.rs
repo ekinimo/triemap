@@ -2374,3 +2374,291 @@ fn test_update_or_insert() {
     trie.update_or_insert("key2", |v| *v *= 2, || 5);
     assert_eq!(trie.get("key2"), Some(&5));
 }
+
+///
+///
+
+// Test basic functionality of remove_and_prune
+#[test]
+fn test_basic_remove_and_prune() {
+    let mut trie = TrieMap::new();
+    trie.insert("abc", 1);
+    trie.insert("abcd", 2);
+    trie.insert("abce", 3);
+
+    // Verify initial state
+    assert_eq!(trie.len(), 3);
+    assert_eq!(trie.get("abc"), Some(&1));
+    assert_eq!(trie.get("abcd"), Some(&2));
+    assert_eq!(trie.get("abce"), Some(&3));
+
+    // Remove and prune one key
+    let removed = trie.remove_and_prune("abcd");
+    assert_eq!(removed, Some(2));
+
+    // Verify state after removal
+    assert_eq!(trie.len(), 2);
+    assert_eq!(trie.get("abc"), Some(&1));
+    assert_eq!(trie.get("abcd"), None);
+    assert_eq!(trie.get("abce"), Some(&3));
+}
+
+// Test remove_and_prune with a path that should be completely removed
+#[test]
+fn test_remove_and_prune_exclusive_path() {
+    let mut trie = TrieMap::new();
+
+    // Create a main branch and an exclusive branch
+    trie.insert("common", 1);
+    trie.insert("common_branch1", 2);
+    trie.insert("common_branch2", 3);
+    trie.insert("exclusive", 4); // This creates a path used only by this key
+
+    // Remove the exclusive path
+    let removed = trie.remove_and_prune("exclusive");
+    assert_eq!(removed, Some(4));
+
+    // The exclusive path should be gone
+    assert_eq!(trie.get("exclusive"), None);
+
+    // But the common paths should remain
+    assert_eq!(trie.get("common"), Some(&1));
+    assert_eq!(trie.get("common_branch1"), Some(&2));
+    assert_eq!(trie.get("common_branch2"), Some(&3));
+}
+
+// Test removing leaf nodes from a branch
+#[test]
+fn test_remove_and_prune_leaf_nodes() {
+    let mut trie = TrieMap::new();
+
+    // Create a deep path with branches
+    trie.insert("a", 1);
+    trie.insert("ab", 2);
+    trie.insert("abc", 3);
+    trie.insert("abcd", 4);
+
+    // Remove the deepest leaf
+    let removed = trie.remove_and_prune("abcd");
+    assert_eq!(removed, Some(4));
+
+    // The leaf should be gone, but the branch should remain
+    assert_eq!(trie.get("abcd"), None);
+    assert_eq!(trie.get("abc"), Some(&3));
+    assert_eq!(trie.get("ab"), Some(&2));
+    assert_eq!(trie.get("a"), Some(&1));
+
+    // Now remove a middle node with no children
+    let removed = trie.remove_and_prune("abc");
+    assert_eq!(removed, Some(3));
+
+    // The node should be gone
+    assert_eq!(trie.get("abc"), None);
+
+    // The remaining path should be intact
+    assert_eq!(trie.get("ab"), Some(&2));
+    assert_eq!(trie.get("a"), Some(&1));
+}
+
+// Test removing a node that requires pruning
+#[test]
+fn test_remove_and_prune_internal_nodes() {
+    let mut trie = TrieMap::new();
+
+    // Create a structure with a node that has data but also children
+    trie.insert("parent", 1);
+    trie.insert("parent_child", 2);
+
+    // Remove the parent
+    let removed = trie.remove_and_prune("parent");
+    assert_eq!(removed, Some(1));
+
+    // The parent value should be gone
+    assert_eq!(trie.get("parent"), None);
+
+    // But the child should remain
+    assert_eq!(trie.get("parent_child"), Some(&2));
+}
+
+// Test with forked paths
+#[test]
+fn test_remove_and_prune_forked_paths() {
+    let mut trie = TrieMap::new();
+
+    // Create a structure with forked paths
+    trie.insert("fork", 1);
+    trie.insert("fork_a", 2);
+    trie.insert("fork_b", 3);
+
+    // Remove one fork
+    let removed = trie.remove_and_prune("fork_a");
+    assert_eq!(removed, Some(2));
+
+    // The removed fork should be gone
+    assert_eq!(trie.get("fork_a"), None);
+
+    // But other paths should remain
+    assert_eq!(trie.get("fork"), Some(&1));
+    assert_eq!(trie.get("fork_b"), Some(&3));
+
+    // Now remove the root node
+    let removed = trie.remove_and_prune("fork");
+    assert_eq!(removed, Some(1));
+
+    // The root node value should be gone
+    assert_eq!(trie.get("fork"), None);
+
+    // But the remaining fork should still be accessible
+    assert_eq!(trie.get("fork_b"), Some(&3));
+}
+
+// Test with alternating removes
+#[test]
+fn test_remove_and_prune_alternating() {
+    let mut trie = TrieMap::new();
+
+    // Create several paths
+    trie.insert("path1", 1);
+    trie.insert("path2", 2);
+    trie.insert("path3", 3);
+
+    // Remove paths in an alternating pattern
+    let removed = trie.remove_and_prune("path2");
+    assert_eq!(removed, Some(2));
+
+    // Second path should be gone
+    assert_eq!(trie.get("path2"), None);
+
+    // Other paths should remain
+    assert_eq!(trie.get("path1"), Some(&1));
+    assert_eq!(trie.get("path3"), Some(&3));
+
+    // Remove another path
+    let removed = trie.remove_and_prune("path1");
+    assert_eq!(removed, Some(1));
+
+    // First path should be gone
+    assert_eq!(trie.get("path1"), None);
+
+    // Third path should remain
+    assert_eq!(trie.get("path3"), Some(&3));
+}
+
+// Test removing nonexistent keys
+#[test]
+fn test_remove_and_prune_nonexistent() {
+    let mut trie = TrieMap::new();
+
+    trie.insert("existing", 1);
+
+    // Try to remove nonexistent keys
+    let removed = trie.remove_and_prune("nonexistent");
+    assert_eq!(removed, None);
+
+    let removed = trie.remove_and_prune("existi"); // Prefix of existing key
+    assert_eq!(removed, None);
+
+    let removed = trie.remove_and_prune("existingplus"); // Extension of existing key
+    assert_eq!(removed, None);
+
+    // Original data should be intact
+    assert_eq!(trie.len(), 1);
+    assert_eq!(trie.get("existing"), Some(&1));
+}
+
+// Test with binary keys
+#[test]
+fn test_remove_and_prune_binary_keys() {
+    let mut trie = TrieMap::new();
+
+    // Create binary keys
+    let common_prefix = vec![1, 2, 3];
+    let key1 = vec![1, 2, 3, 4];
+    let key2 = vec![1, 2, 3, 5];
+    let unrelated = vec![5, 6, 7];
+
+    trie.insert(&common_prefix, 1);
+    trie.insert(&key1, 2);
+    trie.insert(&key2, 3);
+    trie.insert(&unrelated, 4);
+
+    // Remove one key
+    let removed = trie.remove_and_prune(&key1);
+    assert_eq!(removed, Some(2));
+
+    // The key should be gone
+    assert_eq!(trie.get(&key1), None);
+
+    // Other keys should remain
+    assert_eq!(trie.get(&common_prefix), Some(&1));
+    assert_eq!(trie.get(&key2), Some(&3));
+    assert_eq!(trie.get(&unrelated), Some(&4));
+}
+
+// Test with empty keys
+#[test]
+fn test_remove_and_prune_empty_key() {
+    let mut trie = TrieMap::new();
+
+    // Insert empty key and normal key
+    trie.insert("", 1);
+    trie.insert("normal", 2);
+
+    // Remove empty key
+    let removed = trie.remove_and_prune("");
+    assert_eq!(removed, Some(1));
+
+    // Empty key should be gone
+    assert_eq!(trie.get(""), None);
+
+    // Normal key should remain
+    assert_eq!(trie.get("normal"), Some(&2));
+}
+
+// Test removing all keys one by one
+#[test]
+fn test_remove_and_prune_all() {
+    let mut trie = TrieMap::new();
+
+    // Insert several keys
+    trie.insert("key1", 1);
+    trie.insert("key2", 2);
+    trie.insert("key3", 3);
+
+    // Remove all keys one by one
+    let removed = trie.remove_and_prune("key1");
+    assert_eq!(removed, Some(1));
+    assert_eq!(trie.len(), 2);
+
+    let removed = trie.remove_and_prune("key2");
+    assert_eq!(removed, Some(2));
+    assert_eq!(trie.len(), 1);
+
+    let removed = trie.remove_and_prune("key3");
+    assert_eq!(removed, Some(3));
+
+    // Trie should be empty
+    assert_eq!(trie.len(), 0);
+    assert!(trie.is_empty());
+}
+
+// Test with a deep exclusive path
+#[test]
+fn test_remove_and_prune_deep_exclusive_path() {
+    let mut trie = TrieMap::new();
+
+    // Create a deep exclusive path
+    let deep_key = "a".repeat(100);
+    trie.insert(&deep_key, 1);
+    trie.insert("other", 2);
+
+    // Remove the deep path
+    let removed = trie.remove_and_prune(&deep_key);
+    assert_eq!(removed, Some(1));
+
+    // The deep path should be gone
+    assert_eq!(trie.get(&deep_key), None);
+
+    // The other key should remain
+    assert_eq!(trie.get("other"), Some(&2));
+}

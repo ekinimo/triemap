@@ -1,11 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
+use std::mem;
 use std::ops::{Index, IndexMut};
 
 use crate::as_bytes::AsBytes;
 use crate::entry::{Entry, OccupiedEntry, VacantEntry};
 use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
 use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode};
+use crate::slice_pool::SlicePool;
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
@@ -55,6 +57,7 @@ pub struct TrieMap<T> {
     pub(crate) free_indices: Vec<usize>,
     pub(crate) root: TrieNode,
     pub(crate) size: usize,
+    pub(crate) pool: SlicePool,
 }
 
 impl<T, K: AsBytes, V: Into<T>, const N: usize> From<[(K, V); N]> for TrieMap<T> {
@@ -103,6 +106,7 @@ impl<T: Clone> Clone for TrieMap<T> {
             free_indices: self.free_indices.clone(),
             root: self.root.clone(),
             size: self.size,
+            pool: SlicePool::new(),
         }
     }
 }
@@ -241,6 +245,7 @@ impl<T> TrieMap<T> {
             free_indices: Vec::new(),
             root: TrieNode::new(),
             size: 0,
+            pool: SlicePool::new(),
         }
     }
 
@@ -262,6 +267,7 @@ impl<T> TrieMap<T> {
             free_indices: Vec::new(),
             root: TrieNode::new(),
             size: 0,
+            pool: SlicePool::new(),
         }
     }
 
@@ -341,19 +347,22 @@ impl<T> TrieMap<T> {
 
             if !test_bit(&current.is_present, byte) {
                 let current_size = current.children.len();
-                let mut new_children = Vec::with_capacity(current_size + 1);
+                let mut new_children = self.pool.get(current_size + 1);
 
                 for i in 0..idx {
-                    new_children.push(std::mem::replace(&mut current.children[i], TrieNode::new()));
+                    mem::swap(&mut new_children[i], &mut current.children[i]);
+                    //new_children.push(std::mem::replace(&mut current.children[i], TrieNode::new()));
                 }
 
-                new_children.push(TrieNode::new());
+                new_children[idx] = TrieNode::new();
 
                 for i in idx..current_size {
-                    new_children.push(std::mem::replace(&mut current.children[i], TrieNode::new()));
+                    mem::swap(&mut new_children[i + 1], &mut current.children[i]);
                 }
 
-                current.children = new_children.into_boxed_slice();
+                let old_children = mem::replace(&mut current.children, new_children);
+                self.pool.put(old_children);
+
                 set_bit(&mut current.is_present, byte);
             }
 
@@ -669,7 +678,74 @@ impl<T> TrieMap<T> {
             None
         }
     }
+    pub fn prune(&mut self) -> usize {
+        // We need to avoid having two mutable references to self
+        // Let's extract the nodes we need separately
+        let mut root = std::mem::take(&mut self.root);
+        let slice_pool = &mut self.pool;
 
+        let pruned = Self::prune_node_helper(&mut root, slice_pool);
+
+        // Put the root back
+        self.root = root;
+
+        pruned
+    }
+
+    fn prune_node_helper(node: &mut TrieNode, slice_pool: &mut SlicePool) -> usize {
+        let mut pruned_nodes = 0;
+        let mut bytes_to_clear = Vec::new();
+
+        for byte in 0..=255u8 {
+            if test_bit(&node.is_present, byte) {
+                let idx = popcount(&node.is_present, byte) as usize;
+                if idx < node.children.len() {
+                    // Recursively prune the child node
+                    let child_pruned = Self::prune_node_helper(&mut node.children[idx], slice_pool);
+                    pruned_nodes += child_pruned;
+
+                    if node.children[idx].data_idx.is_none()
+                        && node.children[idx].children.is_empty()
+                    {
+                        bytes_to_clear.push(byte);
+                    }
+                }
+            }
+        }
+
+        if !bytes_to_clear.is_empty() {
+            let current_size = node.children.len();
+            let new_size = current_size - bytes_to_clear.len();
+
+            if new_size == 0 {
+                let old_children = std::mem::replace(&mut node.children, Box::new([]));
+                slice_pool.put(old_children);
+            } else {
+                let mut new_children = slice_pool.get(new_size);
+                let mut new_idx = 0;
+
+                for byte in 0..=255u8 {
+                    if test_bit(&node.is_present, byte) && !bytes_to_clear.contains(&byte) {
+                        let idx = popcount(&node.is_present, byte) as usize;
+                        if idx < node.children.len() {
+                            std::mem::swap(&mut new_children[new_idx], &mut node.children[idx]);
+                            new_idx += 1;
+                        }
+                    }
+                }
+
+                let old_children = std::mem::replace(&mut node.children, new_children);
+                slice_pool.put(old_children);
+            }
+
+            pruned_nodes += bytes_to_clear.len();
+            for byte in bytes_to_clear {
+                clear_bit(&mut node.is_present, byte);
+            }
+        }
+
+        pruned_nodes
+    }
     /// Prunes unused nodes from the trie to reclaim memory.
     ///
     /// This method removes all nodes that don't contain values and don't lead to nodes with values.
@@ -692,60 +768,7 @@ impl<T> TrieMap<T> {
     /// map.prune();
     /// // Now the unused nodes have been removed
     /// ```
-    pub fn prune(&mut self) -> usize {
-        Self::prune_node(&mut self.root)
-    }
 
-    // Helper method to recursively prune nodes
-    fn prune_node(node: &mut TrieNode) -> usize {
-        let mut pruned_nodes = 0;
-        let mut bytes_to_clear = Vec::new();
-
-        // Check each byte in the is_present array
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-                if idx < node.children.len() {
-                    // Recursively prune the child node
-                    let child_pruned = Self::prune_node(&mut node.children[idx]);
-                    pruned_nodes += child_pruned;
-
-                    // Check if the child node is now empty and can be removed
-                    if node.children[idx].data_idx.is_none()
-                        && node.children[idx].children.is_empty()
-                    {
-                        bytes_to_clear.push(byte);
-                    }
-                }
-            }
-        }
-
-        // Remove empty children that were marked for removal
-        for &byte in &bytes_to_clear {
-            let idx = popcount(&node.is_present, byte) as usize;
-
-            // Create a new children array without the empty node
-            let mut new_children = Vec::with_capacity(node.children.len() - 1);
-
-            // Copy all children except the one being removed
-            for i in 0..node.children.len() {
-                if i != idx {
-                    new_children.push(std::mem::replace(&mut node.children[i], TrieNode::new()));
-                }
-            }
-
-            // Update the node's children
-            node.children = new_children.into_boxed_slice();
-
-            // Update the is_present bits - need to clear the bit for the removed node
-            clear_bit(&mut node.is_present, byte);
-
-            // Update counts
-            pruned_nodes += 1;
-        }
-
-        pruned_nodes
-    }
     /// Returns an iterator over the key-value pairs of the map.
     ///
     /// # Examples

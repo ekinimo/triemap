@@ -14,6 +14,7 @@ mod as_bytes;
 mod entry;
 mod iter;
 mod node;
+mod slice_pool;
 mod trie_map;
 
 pub use as_bytes::AsBytes;
