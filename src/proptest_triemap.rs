@@ -110,7 +110,7 @@ fn test_triemap_memory_reuse() {
 
     // Remove some data
     for i in 0..50 {
-        trie.remove(&format!("key_{}", i));
+        trie.remove(format!("key_{}", i));
     }
 
     // Check free indices after removal
@@ -127,7 +127,7 @@ fn test_triemap_memory_reuse() {
 
     // Verify data integrity
     for i in 50..150 {
-        assert_eq!(trie.get(&format!("key_{}", i)), Some(&(i as i32)));
+        assert_eq!(trie.get(format!("key_{}", i)), Some(&{ i }));
     }
 }
 
@@ -809,7 +809,7 @@ fn test_retained_capacity_after_removals() {
     let capacity_before = trie.capacity();
 
     for i in 0..1000 {
-        trie.remove(&format!("key_{}", i));
+        trie.remove(format!("key_{}", i));
     }
 
     let capacity_after = trie.capacity();
@@ -836,7 +836,7 @@ fn test_reused_indices_after_removal() {
     assert_eq!(trie.free_indices.len(), 0);
 
     for i in 0..5 {
-        trie.remove(&format!("key_{}", i));
+        trie.remove(format!("key_{}", i));
     }
 
     assert_eq!(trie.free_indices.len(), 5);
@@ -848,7 +848,7 @@ fn test_reused_indices_after_removal() {
     assert_eq!(trie.free_indices.len(), 0);
 
     for i in 5..15 {
-        assert_eq!(trie.get(&format!("key_{}", i)), Some(&i));
+        assert_eq!(trie.get(format!("key_{}", i)), Some(&i));
     }
 }
 

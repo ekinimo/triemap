@@ -1214,7 +1214,7 @@ fn test_entry_or_insert_with() {
             100
         });
         assert_eq!(*value, 84);
-        assert_eq!(called.get(), false);
+        assert!(!called.get());
     }
 }
 
@@ -1792,7 +1792,7 @@ fn test_get_or_insert_with() {
         });
 
         assert_eq!(*value, 42);
-        assert_eq!(called.get(), false);
+        assert!(!called.get());
     }
 }
 
