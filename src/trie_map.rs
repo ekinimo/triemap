@@ -57,7 +57,7 @@ pub struct TrieMap<T> {
     pub(crate) free_indices: Vec<usize>,
     pub(crate) root: TrieNode,
     pub(crate) size: usize,
-    pub(crate) pool: SlicePool,
+    pub(crate) pool: SlicePool<TrieNode>,
 }
 
 impl<T, K: AsBytes, V: Into<T>, const N: usize> From<[(K, V); N]> for TrieMap<T> {
@@ -694,7 +694,7 @@ impl<T> TrieMap<T> {
         pruned
     }
 
-    fn prune_node_helper(node: &mut TrieNode, slice_pool: &mut SlicePool) -> usize {
+    fn prune_node_helper(node: &mut TrieNode, slice_pool: &mut SlicePool<TrieNode>) -> usize {
         let mut pruned_nodes = 0;
         let mut bytes_to_clear = Vec::new();
 

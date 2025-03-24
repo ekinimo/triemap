@@ -12,7 +12,10 @@
 
 mod as_bytes;
 mod entry;
+
+mod immutable_trie_map;
 mod iter;
+mod mutable_trie_map;
 mod node;
 mod slice_pool;
 mod trie_map;
