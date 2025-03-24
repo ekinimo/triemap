@@ -5,7 +5,7 @@ use std::ops::{Index, IndexMut};
 
 use crate::as_bytes::AsBytes;
 use crate::entry::{Entry, OccupiedEntry, VacantEntry};
-use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
+use crate::iter::{DrainIter, Iter, IterState, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
 use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode};
 use crate::slice_pool::SlicePool;
 
@@ -786,12 +786,16 @@ impl<T> TrieMap<T> {
     /// }
     /// ```
     pub fn iter(&self) -> Iter<'_, T> {
-        let mut pairs = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-
-        self.collect_pairs(&self.root, &mut current_key, &mut pairs);
-
-        Iter { pairs, position: 0 }
+        Iter {
+            trie: self,
+            stack: vec![IterState {
+                node: &self.root,
+                byte_index: 0,
+                value_emitted: false,
+            }],
+            current_path: Vec::new(),
+            remaining: self.size,
+        }
     }
 
     fn collect_pairs<'a>(
@@ -945,19 +949,74 @@ impl<T> TrieMap<T> {
     /// assert_eq!(iter.next().unwrap().1, &2);
     /// assert!(iter.next().is_none());
     /// ```
-    pub fn prefix_iter<K: AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
-        let mut result = Vec::new();
-        if let Some(node) = self.find_node(prefix.as_bytes()) {
-            let mut prefix_vec = prefix.as_bytes().to_vec();
-            self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
+    pub fn prefix_iter<K: crate::AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
+        let prefix_bytes = prefix.as_bytes();
+        let mut current_node = &self.root;
+        let mut current_path = Vec::with_capacity(prefix_bytes.len());
+        let mut valid_prefix = true;
+
+        // Navigate to the node corresponding to the prefix
+        for &byte in prefix_bytes {
+            if !test_bit(&current_node.is_present, byte) {
+                valid_prefix = false;
+                break;
+            }
+
+            let idx = crate::node::popcount(&current_node.is_present, byte) as usize;
+            if idx >= current_node.children.len() {
+                valid_prefix = false;
+                break;
+            }
+
+            current_path.push(byte);
+            current_node = &current_node.children[idx];
         }
 
-        PrefixIter {
-            pairs: result,
-            position: 0,
+        // If the prefix is valid, start the iterator at that node
+        if valid_prefix {
+            // Count how many items we'll be returning
+            let mut count = 0;
+            let mut temp_path = current_path.clone();
+            Self::count_items_recursive(current_node, &mut temp_path, &mut count);
+
+            PrefixIter {
+                trie: self,
+                stack: vec![IterState {
+                    node: current_node,
+                    byte_index: 0,
+                    value_emitted: false,
+                }],
+                current_path,
+                remaining: count,
+                prefix: prefix_bytes.to_vec(),
+            }
+        } else {
+            // Empty iterator if prefix not found
+            PrefixIter {
+                trie: self,
+                stack: Vec::new(),
+                current_path: Vec::new(),
+                remaining: 0,
+                prefix: prefix_bytes.to_vec(),
+            }
         }
     }
+    fn count_items_recursive(node: &crate::node::TrieNode, _path: &mut Vec<u8>, count: &mut usize) {
+        if node.data_idx.is_some() {
+            *count += 1;
+        }
 
+        for byte in 0..=255u8 {
+            if test_bit(&node.is_present, byte) {
+                let idx = crate::node::popcount(&node.is_present, byte) as usize;
+                if idx < node.children.len() {
+                    _path.push(byte);
+                    Self::count_items_recursive(&node.children[idx], _path, count);
+                    _path.pop();
+                }
+            }
+        }
+    }
     /// Returns an iterator over all keys that start with the given prefix.
     ///
     /// # Examples
@@ -1182,20 +1241,6 @@ impl<T> TrieMap<T> {
                 }
             }
         }
-    }
-
-    /// Converts the map into an iterator over key-value pairs.
-    pub fn into_iter(self) -> impl Iterator<Item = (Vec<u8>, T)> {
-        let mut keys_indices = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-        Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
-        let map: std::collections::HashMap<_, _> =
-            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
-
-        self.data
-            .into_iter()
-            .enumerate()
-            .filter_map(move |(idx, opt)| opt.map(|value| (map[&idx].clone(), value)))
     }
 
     /// Removes all key-value pairs from the map, returning them as an iterator.
