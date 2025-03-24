@@ -16,8 +16,332 @@ fn key_value_pairs(
     )
 }
 
+fn prefixed_keys(
+    prefixes: Vec<&'static str>,
+    min_pairs: usize,
+    max_pairs: usize,
+) -> impl Strategy<Value = Vec<(String, i32)>> {
+    let prefixes_strategy = proptest::sample::select(prefixes);
+    proptest::collection::vec(
+        (
+            prefixes_strategy.prop_flat_map(|prefix| {
+                "[a-zA-Z0-9]{0,8}".prop_map(move |s| format!("{}{}", prefix, s))
+            }),
+            proptest::num::i32::ANY,
+        ),
+        min_pairs..max_pairs,
+    )
+}
+
+fn binary_key_value_pairs(
+    min_pairs: usize,
+    max_pairs: usize,
+) -> impl Strategy<Value = Vec<(Vec<u8>, i32)>> {
+    proptest::collection::vec(
+        (
+            proptest::collection::vec(any::<u8>(), 1..20),
+            proptest::num::i32::ANY,
+        ),
+        min_pairs..max_pairs,
+    )
+}
+
+#[derive(Debug, Clone)]
+enum Operation {
+    Insert(String, i32),
+    Remove(String),
+    RemovePrefix(String),
+}
+
+#[test]
+fn test_triemap_more_edge_cases() {
+    // Test with empty key
+    let mut trie = TrieMap::new();
+    trie.insert("", 1);
+    assert_eq!(trie.get(""), Some(&1));
+    assert_eq!(trie.len(), 1);
+
+    // Test with very long key
+    let long_key = "a".repeat(1000);
+    trie.insert(&long_key, 2);
+    assert_eq!(trie.get(&long_key), Some(&2));
+    assert_eq!(trie.len(), 2);
+
+    // Test with keys containing all possible byte values
+    for byte in 0..=255u8 {
+        let key = vec![byte];
+        trie.insert(&key, byte as i32);
+    }
+
+    assert_eq!(trie.len(), 2 + 256);
+
+    for byte in 0..=255u8 {
+        let key = vec![byte];
+        assert_eq!(trie.get(&key), Some(&(byte as i32)));
+    }
+
+    // Test with a key containing zero bytes
+    let zero_bytes_key = vec![0, 0, 0];
+    trie.insert(&zero_bytes_key, 999);
+    assert_eq!(trie.get(&zero_bytes_key), Some(&999));
+
+    // Test prefix operations on binary data
+    let prefix = vec![0];
+    let matches = trie.get_prefix_matches(&prefix);
+    assert!(matches.len() >= 2); // At least the single zero byte key and the zero_bytes_key
+
+    // Test with key containing all possible byte values
+    let all_bytes: Vec<u8> = (0..=255).collect();
+    trie.insert(&all_bytes, 1000);
+    assert_eq!(trie.get(&all_bytes), Some(&1000));
+}
+
+#[test]
+fn test_triemap_memory_reuse() {
+    let mut trie = TrieMap::new();
+
+    // Insert data
+    for i in 0..100 {
+        trie.insert(format!("key_{}", i), i);
+    }
+
+    // Record free indices before removal
+    let free_indices_before = trie.free_indices.len();
+
+    // Remove some data
+    for i in 0..50 {
+        trie.remove(&format!("key_{}", i));
+    }
+
+    // Check free indices after removal
+    let free_indices_after = trie.free_indices.len();
+    assert_eq!(free_indices_after, free_indices_before + 50);
+
+    // Insert new data, should reuse free indices
+    for i in 100..150 {
+        trie.insert(format!("key_{}", i), i);
+    }
+
+    // Free indices should be used up
+    assert_eq!(trie.free_indices.len(), free_indices_before);
+
+    // Verify data integrity
+    for i in 50..150 {
+        assert_eq!(trie.get(&format!("key_{}", i)), Some(&(i as i32)));
+    }
+}
+
+// Test for empty trie behavior
+#[test]
+fn test_empty_triemap_behavior() {
+    let mut trie: TrieMap<i32> = TrieMap::new();
+
+    // Empty trie tests
+    assert!(trie.is_empty());
+    assert_eq!(trie.len(), 0);
+    assert!(trie.iter().next().is_none());
+    assert!(trie.keys().next().is_none());
+    assert!(trie.values().next().is_none());
+
+    // Empty prefix operations
+    assert!(!trie.starts_with("any"));
+    assert!(trie.get_prefix_matches("any").is_empty());
+    assert!(trie.prefix_iter("any").next().is_none());
+
+    // Entry API on empty trie
+    if let Entry::Vacant(_) = trie.entry("test") {
+        // This is expected
+    } else {
+        panic!("Entry for nonexistent key should be Vacant");
+    }
+
+    // Remove on empty trie
+    assert_eq!(trie.remove("anything"), None);
+
+    // Ensure trie is still empty
+    assert!(trie.is_empty());
+}
+
 proptest! {
-                #[test]
+  #[test]
+    fn triemap_correctly_handles_common_prefixes(
+        pairs in prefixed_keys(vec!["app", "ban", "car", "dog"], 5, 50)
+    ) {
+        let mut trie = TrieMap::new();
+        let mut hash_map = HashMap::new();
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            hash_map.insert(key.clone(), *value);
+        }
+
+        for (key, _) in &pairs {
+            if key.len() >= 3 {
+                let prefix = &key[0..3];
+
+                let prefix_matches = trie.get_prefix_matches(prefix);
+                let expected_matches: Vec<_> = hash_map.iter()
+                    .filter(|(k, _)| k.starts_with(prefix))
+                    .map(|(k, v)| (k.as_bytes().to_vec(), v))
+                    .collect();
+
+                assert_eq!(prefix_matches.len(), expected_matches.len());
+
+                let starts_with_result = trie.starts_with(prefix);
+                assert_eq!(starts_with_result, !expected_matches.is_empty());
+            }
+        }
+    }
+
+    // New test: TrieMap updates should handle value replacement correctly
+    #[test]
+    fn triemap_updates_handle_value_replacement(pairs in key_value_pairs(1, 100)) {
+        let mut trie = TrieMap::new();
+        let mut hash_map = HashMap::new();
+
+        // First insert
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            hash_map.insert(key.clone(), *value);
+        }
+
+        // Now replace values by adding 100
+        for (key, _) in &pairs {
+            if let Some(value) = hash_map.get_mut(key) {
+                *value += 100;
+                trie.insert(key, *value);
+            }
+        }
+
+        // Verify values were updated
+        for (key, expected_value) in &hash_map {
+            assert_eq!(trie.get(key), Some(expected_value));
+        }
+    }
+
+
+
+    #[test]
+    fn triemap_handles_binary_keys_correctly(pairs in binary_key_value_pairs(1, 50)) {
+        let mut trie = TrieMap::new();
+        let mut reference_map = HashMap::new();
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            reference_map.insert(key.clone(), *value);
+        }
+
+        for (key, expected) in &reference_map {
+            assert_eq!(trie.get(key), Some(expected));
+        }
+
+        assert_eq!(trie.len(), reference_map.len());
+
+        // Test removal
+        if let Some((first_key, _)) = pairs.first() {
+            trie.remove(first_key);
+            reference_map.remove(first_key);
+
+            assert!(!trie.contains_key(first_key));
+            assert_eq!(trie.len(), reference_map.len());
+        }
+    }
+
+    #[test]
+    fn triemap_entry_api_complex_operations(
+        pairs in key_value_pairs(1, 50),
+        new_keys in proptest::collection::vec("[a-zA-Z0-9]{1,10}".prop_map(String::from), 1..30)
+    ) {
+        let mut trie = TrieMap::new();
+        let mut reference_map = HashMap::new();
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            reference_map.insert(key.clone(), *value);
+        }
+
+        let mut counter = 0;
+        for key in &new_keys {
+            // Use entry API
+            trie.entry(key).or_insert_with(|| {
+                counter &= 1;
+                counter
+            });
+
+            // Reference implementation
+            reference_map.entry(key.clone()).or_insert_with(|| {
+                counter
+            });
+        }
+
+        // Test and_modify for existing entries
+        for key in reference_map.keys().cloned().collect::<Vec<_>>() {
+            trie.entry(&key).and_modify(|v| *v |= 2).or_insert(0);
+            reference_map.entry(key).and_modify(|v| *v
+                                                |= 2).or_insert(0);
+        }
+
+        // Verify maps are equivalent
+        assert_eq!(trie.len(), reference_map.len());
+
+        for (key, expected) in &reference_map {
+            assert_eq!(trie.get(key), Some(expected));
+        }
+    }
+
+    #[test]
+    fn triemap_retain_predicate(pairs in key_value_pairs(5, 100)) {
+        let mut trie = TrieMap::new();
+        let mut hash_map = HashMap::new();
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            hash_map.insert(key.clone(), *value);
+        }
+
+        // Retain only even values
+        let predicate = |_: &[u8], v: &mut i32| *v % 2 == 0;
+        trie.retain(predicate);
+
+        // Apply same filter to reference map
+        hash_map.retain(|_, v| *v % 2 == 0);
+
+        // Verify maps are equivalent
+        assert_eq!(trie.len(), hash_map.len());
+
+        for (key, expected) in &hash_map {
+            assert_eq!(trie.get(key), Some(expected));
+        }
+
+        // Make sure no odd values remain
+        for (_, value) in trie.iter() {
+            assert_eq!(*value % 2, 0);
+        }
+    }
+
+    // New test: Drain operation should empty the map
+    #[test]
+    fn triemap_drain_empties_map(pairs in key_value_pairs(1, 50)) {
+        let mut trie = TrieMap::new();
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+        }
+
+        let original_len = trie.len();
+        let drained: Vec<_> = trie.drain().collect();
+
+        // Drained elements should match original length
+        assert_eq!(drained.len(), original_len);
+
+        // Map should be empty
+        assert_eq!(trie.len(), 0);
+        assert!(trie.is_empty());
+    }
+
+
+
+    #[test]
                 fn triemap_insert_get_equivalence(pairs in key_value_pairs(1, 100)) {
                     let mut trie = TrieMap::new();
                     let mut expected_values = HashMap::new();
