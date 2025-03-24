@@ -2,6 +2,7 @@ use super::*;
 use proptest::prelude::*;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 fn key_value_pairs(
     min_pairs: usize,
@@ -163,7 +164,178 @@ fn test_empty_triemap_behavior() {
 }
 
 proptest! {
-  #[test]
+
+              #[test]
+        fn pruning_preserves_values(pairs in key_value_pairs(1, 100), to_remove in key_value_pairs(1, 50)) {
+            let mut trie = TrieMap::new();
+            let mut reference_map = BTreeMap::new();
+
+            for (key, value) in &pairs {
+                trie.insert(key, *value);
+                reference_map.insert(key.clone(), *value);
+            }
+
+            for (key, _) in &to_remove {
+                trie.remove(key);
+                reference_map.remove(key);
+            }
+
+            trie.prune();
+
+            for (key, expected_value) in &reference_map {
+                prop_assert_eq!(trie.get(key), Some(expected_value));
+            }
+
+            for (key, _) in &to_remove {
+                if !reference_map.contains_key(key) {
+                    prop_assert_eq!(trie.get(key), None);
+                }
+            }
+
+            prop_assert_eq!(trie.len(), reference_map.len());
+        }
+        // Test that multiple prune operations are idempotent
+        #[test]
+        fn multiple_prunes_are_idempotent(
+            pairs in key_value_pairs(1, 100),
+            to_remove in key_value_pairs(1, 50)
+        ) {
+            let mut trie = TrieMap::new();
+
+            // Insert all pairs
+            for (key, value) in &pairs {
+                trie.insert(key, *value);
+            }
+
+            // Remove some keys
+            for (key, _) in &to_remove {
+                trie.remove(key);
+            }
+
+            // First prune
+            let first_pruned = trie.prune();
+            let size_after_first = trie.len();
+
+            // Second prune
+            let second_pruned = trie.prune();
+            let size_after_second = trie.len();
+
+            // The second prune should not remove any nodes
+            prop_assert_eq!(second_pruned, 0);
+
+            // Sizes should be the same
+            prop_assert_eq!(size_after_first, size_after_second);
+        }
+
+            #[test]
+        fn removal_works_correctly(pairs in key_value_pairs(5, 100)) {
+            let mut trie = TrieMap::new();
+            let mut reference_map = BTreeMap::new();
+
+            // Insert all pairs
+            for (key, value) in &pairs {
+                trie.insert(key, *value);
+                reference_map.insert(key.clone(), *value);
+            }
+
+            // Get the unique keys that were actually inserted (last value wins for duplicates)
+            let unique_keys: Vec<String> = reference_map.keys().cloned().collect();
+
+            // Remove half of the unique keys
+            let mut removed = 0;
+            for (i, key) in unique_keys.iter().enumerate() {
+                if i % 2 == 0 {  // Only remove every other key
+                    let expected_value = reference_map.get(key).copied();
+                    let trie_removed = trie.remove(key);
+                    let ref_removed = reference_map.remove(key);
+
+                    // The removed value should match between trie and reference map
+                    prop_assert_eq!(trie_removed, ref_removed);
+                    // And should match what we expected to remove
+                    prop_assert_eq!(trie_removed, expected_value);
+
+                    removed += 1;
+                }
+            }
+
+            // Check that the size is correct
+            prop_assert_eq!(trie.len(), reference_map.len());
+
+            // Check that all remaining keys are accessible
+            for (key, value) in &reference_map {
+                prop_assert_eq!(trie.get(key), Some(value));
+            }
+
+            // Check that removed keys are not accessible
+            for (i, key) in unique_keys.iter().enumerate() {
+                if i % 2 == 0 {  // These were removed
+                    prop_assert_eq!(trie.get(key), None);
+                }
+            }
+        }
+
+        #[test]
+        fn iteration_after_removal_is_correct(
+            pairs in key_value_pairs(5, 100),
+            removal_indices in proptest::collection::vec(0..100usize, 1..50)
+        ) {
+            let mut trie = TrieMap::new();
+            let mut reference_map = BTreeMap::new();
+
+            // Insert all pairs
+            for (key, value) in &pairs {
+                trie.insert(key, *value);
+                reference_map.insert(key.clone(), *value);
+            }
+
+            // Create list of keys to remove (using indices to prevent duplicates)
+            let keys_to_remove: Vec<String> = removal_indices.iter()
+                .filter(|&idx| *idx < pairs.len())
+                .map(|&idx| pairs[idx].0.clone())
+                .collect();
+
+            // Remove selected keys
+            for key in &keys_to_remove {
+                trie.remove(key);
+                reference_map.remove(key);
+            }
+
+            // Get all key-value pairs from trie iteration
+            let mut trie_pairs: Vec<(String, i32)> = trie.iter()
+                .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+                .collect();
+
+            // Get all key-value pairs from reference map
+            let mut ref_pairs: Vec<(String, i32)> = reference_map
+                .iter()
+                .map(|(k, &v)| (k.clone(), v))
+                .collect();
+
+            // Sort both for comparison
+            trie_pairs.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+            ref_pairs.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
+
+            // They should be equal
+            prop_assert_eq!(trie_pairs, ref_pairs);
+
+            // Size should match
+            prop_assert_eq!(trie.len(), reference_map.len());
+
+            // Check iterator count matches expected count
+            prop_assert_eq!(trie.iter().count(), reference_map.len());
+
+            // Also check keys() and values() iterators
+            prop_assert_eq!(trie.keys().count(), reference_map.len());
+            prop_assert_eq!(trie.values().count(), reference_map.len());
+
+            // Verify removed keys are not present
+            for key in &keys_to_remove {
+                prop_assert_eq!(trie.get(key), None);
+                prop_assert!(!trie.keys().any(|k| String::from_utf8(k).unwrap() == *key));
+            }
+        }
+
+    #[test]
     fn triemap_correctly_handles_common_prefixes(
         pairs in prefixed_keys(vec!["app", "ban", "car", "dog"], 5, 50)
     ) {

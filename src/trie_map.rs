@@ -530,7 +530,9 @@ impl<T> TrieMap<T> {
     }
 
     /// Removes a key from the map, returning the value at the key if the key was previously in the map.
-    ///
+    /// This does not remove the nodes used to register the key
+    /// Use `remove_and_prune` method for removing intermittent nodes as well.
+    /// Use `prune` method to remove *all* nodes that leads to a thombstone
     /// # Examples
     ///
     /// ```
@@ -548,6 +550,56 @@ impl<T> TrieMap<T> {
     }
 
     fn remove_internal(&mut self, bytes: &[u8]) -> Option<T> {
+        let mut current = &mut self.root;
+        let mut found = true;
+
+        for &byte in bytes {
+            if !test_bit(&current.is_present, byte) {
+                found = false;
+                break;
+            }
+            let idx = popcount(&current.is_present, byte) as usize;
+            if idx >= current.children.len() {
+                found = false;
+                break;
+            }
+            current = &mut current.children[idx];
+        }
+
+        if found && current.data_idx.is_some() {
+            let data_idx = current.data_idx.unwrap();
+
+            if data_idx < self.data.len() && self.data[data_idx].is_some() {
+                let value = self.data[data_idx].take();
+                current.data_idx = None;
+                self.free_indices.push(data_idx);
+                self.size -= 1;
+                return value;
+            }
+        }
+
+        None
+    }
+
+    /// Removes a key from the map, returning the value at the key if the key was previously in the map.
+    /// This method also removes the nodes used to register the key
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("a", 1);
+    ///
+    /// assert_eq!(map.remove("a"), Some(1));
+    /// assert_eq!(map.remove("a"), None);
+    /// ```
+    pub fn remove_and_prune<K: AsBytes>(&mut self, key: K) -> Option<T> {
+        let bytes = key.as_bytes();
+
+        self.remove_and_prune_internal(bytes)
+    }
+
+    fn remove_and_prune_internal(&mut self, bytes: &[u8]) -> Option<T> {
         let mut path = Vec::with_capacity(bytes.len());
         let mut path_indices = Vec::with_capacity(bytes.len());
 
@@ -618,6 +670,82 @@ impl<T> TrieMap<T> {
         }
     }
 
+    /// Prunes unused nodes from the trie to reclaim memory.
+    ///
+    /// This method removes all nodes that don't contain values and don't lead to nodes with values.
+    /// It's useful to call periodically if you've removed many items from the trie.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use triemap::TrieMap;
+    /// let mut map = TrieMap::new();
+    /// map.insert("apple", 1);
+    /// map.insert("application", 2);
+    ///
+    /// map.remove("apple");
+    /// map.remove("application");
+    ///
+    /// // The trie structure still contains nodes for "apple" and "application"
+    /// // even though the values have been removed
+    ///
+    /// map.prune();
+    /// // Now the unused nodes have been removed
+    /// ```
+    pub fn prune(&mut self) -> usize {
+        Self::prune_node(&mut self.root)
+    }
+
+    // Helper method to recursively prune nodes
+    fn prune_node(node: &mut TrieNode) -> usize {
+        let mut pruned_nodes = 0;
+        let mut bytes_to_clear = Vec::new();
+
+        // Check each byte in the is_present array
+        for byte in 0..=255u8 {
+            if test_bit(&node.is_present, byte) {
+                let idx = popcount(&node.is_present, byte) as usize;
+                if idx < node.children.len() {
+                    // Recursively prune the child node
+                    let child_pruned = Self::prune_node(&mut node.children[idx]);
+                    pruned_nodes += child_pruned;
+
+                    // Check if the child node is now empty and can be removed
+                    if node.children[idx].data_idx.is_none()
+                        && node.children[idx].children.is_empty()
+                    {
+                        bytes_to_clear.push(byte);
+                    }
+                }
+            }
+        }
+
+        // Remove empty children that were marked for removal
+        for &byte in &bytes_to_clear {
+            let idx = popcount(&node.is_present, byte) as usize;
+
+            // Create a new children array without the empty node
+            let mut new_children = Vec::with_capacity(node.children.len() - 1);
+
+            // Copy all children except the one being removed
+            for i in 0..node.children.len() {
+                if i != idx {
+                    new_children.push(std::mem::replace(&mut node.children[i], TrieNode::new()));
+                }
+            }
+
+            // Update the node's children
+            node.children = new_children.into_boxed_slice();
+
+            // Update the is_present bits - need to clear the bit for the removed node
+            clear_bit(&mut node.is_present, byte);
+
+            // Update counts
+            pruned_nodes += 1;
+        }
+
+        pruned_nodes
+    }
     /// Returns an iterator over the key-value pairs of the map.
     ///
     /// # Examples
@@ -1638,8 +1766,7 @@ impl<T> TrieMap<T> {
         &'a self,
         other: &'a TrieMap<T>,
     ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
-        self.iter()
-            .filter(move |(key, _)| other.contains_key(key))
+        self.iter().filter(move |(key, _)| other.contains_key(key))
     }
 
     /// Returns an iterator over the entries whose keys are in this map but not in the other map.
@@ -1667,8 +1794,7 @@ impl<T> TrieMap<T> {
         &'a self,
         other: &'a TrieMap<T>,
     ) -> impl Iterator<Item = (Vec<u8>, &'a T)> + 'a {
-        self.iter()
-            .filter(move |(key, _)| !other.contains_key(key))
+        self.iter().filter(move |(key, _)| !other.contains_key(key))
     }
 
     /// Returns an iterator over entries whose keys are in exactly one of the maps.

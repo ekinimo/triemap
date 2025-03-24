@@ -2,6 +2,499 @@ use super::*;
 use crate::node::{set_bit, test_bit, TrieNode};
 use std::hash::DefaultHasher;
 
+#[test]
+fn test_iteration_after_specific_removal_patterns() {
+    // Test case 1: Remove leaf nodes
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("apple", 1);
+        trie.insert("application", 2);
+        trie.insert("banana", 3);
+
+        // Remove a leaf node
+        trie.remove("application");
+
+        // Check iteration
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("apple".to_string(), 1)));
+        assert!(pairs.contains(&("banana".to_string(), 3)));
+        assert!(!pairs.contains(&("application".to_string(), 2)));
+    }
+
+    // Test case 2: Remove parent nodes
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+        trie.insert("ab", 2);
+        trie.insert("abc", 3);
+
+        // Remove a parent node (middle of path)
+        trie.remove("ab");
+
+        // Check iteration includes both remaining nodes
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("a".to_string(), 1)));
+        assert!(pairs.contains(&("abc".to_string(), 3)));
+        assert!(!pairs.contains(&("ab".to_string(), 2)));
+    }
+
+    // Test case 3: Empty trie after removal
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+
+        // Remove the only element
+        trie.remove("a");
+
+        // Check iteration on empty trie
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 0);
+    }
+
+    // Test case 4: Remove and reinsert
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("a", 1);
+        trie.insert("b", 2);
+
+        // Remove and reinsert with different value
+        trie.remove("a");
+        trie.insert("a", 10);
+
+        // Check iteration has updated value
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("a".to_string(), 10)));
+        assert!(pairs.contains(&("b".to_string(), 2)));
+    }
+
+    // Test case 5: Shared prefix removals
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("test", 1);
+        trie.insert("testing", 2);
+        trie.insert("tested", 3);
+        trie.insert("tester", 4);
+
+        // Remove two with shared prefix
+        trie.remove("testing");
+        trie.remove("tested");
+
+        // Check remaining items
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("test".to_string(), 1)));
+        assert!(pairs.contains(&("tester".to_string(), 4)));
+    }
+
+    // Test case 6: Remove all entries with same prefix
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("foo1", 1);
+        trie.insert("foo2", 2);
+        trie.insert("bar", 3);
+
+        // Remove all foo entries
+        trie.remove("foo1");
+        trie.remove("foo2");
+
+        // Iteration should only include bar
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("bar".to_string(), 3));
+    }
+
+    // Test case 7: Interleaved insert and remove operations
+    {
+        let mut trie = TrieMap::new();
+
+        trie.insert("a", 1);
+        trie.insert("b", 2);
+        trie.remove("a");
+        trie.insert("c", 3);
+        trie.remove("b");
+        trie.insert("d", 4);
+
+        // Check final iteration state
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("c".to_string(), 3)));
+        assert!(pairs.contains(&("d".to_string(), 4)));
+    }
+
+    // Test case 8: Remove nodes with special characters
+    {
+        let mut trie = TrieMap::new();
+        trie.insert("normal", 1);
+        trie.insert("special!@#", 2);
+        trie.insert("numbers123", 3);
+
+        // Remove the special character key
+        trie.remove("special!@#");
+
+        // Check iteration
+        let pairs: Vec<(String, i32)> = trie
+            .iter()
+            .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
+            .collect();
+
+        assert_eq!(pairs.len(), 2);
+        assert!(pairs.contains(&("normal".to_string(), 1)));
+        assert!(pairs.contains(&("numbers123".to_string(), 3)));
+    }
+}
+
+#[test]
+fn test_improved_remove() {
+    let mut trie = TrieMap::new();
+    trie.insert("abc", 1);
+    trie.insert("abcd", 2);
+    trie.insert("abce", 3);
+
+    // Remove a value
+    assert_eq!(trie.remove("abcd"), Some(2));
+    assert_eq!(trie.len(), 2);
+
+    // The value should be gone
+    assert_eq!(trie.get("abcd"), None);
+
+    // But other values should remain
+    assert_eq!(trie.get("abc"), Some(&1));
+    assert_eq!(trie.get("abce"), Some(&3));
+
+    // Reinserting the value should reuse the existing structure
+    trie.insert("abcd", 4);
+    assert_eq!(trie.get("abcd"), Some(&4));
+    assert_eq!(trie.len(), 3);
+}
+
+// Test the basic functionality of the prune method
+#[test]
+fn test_basic_prune() {
+    let mut trie = TrieMap::new();
+    trie.insert("abc", 1);
+    trie.insert("abcd", 2);
+    trie.insert("abce", 3);
+
+    // Remove leaves first
+    assert_eq!(trie.remove("abcd"), Some(2));
+    assert_eq!(trie.remove("abce"), Some(3));
+
+    // Structure should still be there before pruning
+    trie.insert("abcd", 4);
+    assert_eq!(trie.get("abcd"), Some(&4));
+
+    // Remove again
+    assert_eq!(trie.remove("abcd"), Some(4));
+
+    // Now prune
+    let pruned = trie.prune();
+    assert!(pruned > 0); // Should have pruned some nodes
+
+    // The inner structure should be gone now
+    // To test this, we need to reinsert and verify that new nodes are created
+    trie.insert("abcd", 5);
+    assert_eq!(trie.get("abcd"), Some(&5));
+}
+
+// Test pruning on an empty trie
+#[test]
+fn test_prune_empty_trie() {
+    let mut trie: TrieMap<i32> = TrieMap::new();
+
+    // Pruning an empty trie should be safe and return 0
+    let pruned = trie.prune();
+    assert_eq!(pruned, 0);
+}
+
+// Test pruning with a mix of used and unused paths
+#[test]
+fn test_prune_mixed_paths() {
+    let mut trie = TrieMap::new();
+
+    // Create a deep path with branches
+    trie.insert("a", 1);
+    trie.insert("ab", 2);
+    trie.insert("abc", 3);
+    trie.insert("abcd", 4);
+    trie.insert("abcde", 5);
+
+    // Add some alternate branches
+    trie.insert("abx", 6);
+    trie.insert("aby", 7);
+
+    // Remove some but not all leaves
+    assert_eq!(trie.remove("abcde"), Some(5));
+    assert_eq!(trie.remove("abcd"), Some(4));
+    assert_eq!(trie.remove("abx"), Some(6));
+
+    // Should still have
+    // - "a" = 1
+    // - "ab" = 2
+    // - "abc" = 3
+    // - "aby" = 7
+
+    // Prune and check that we've removed some nodes
+    let pruned = trie.prune();
+    assert!(pruned > 0);
+
+    // Existing values should still be accessible
+    assert_eq!(trie.get("a"), Some(&1));
+    assert_eq!(trie.get("ab"), Some(&2));
+    assert_eq!(trie.get("abc"), Some(&3));
+    assert_eq!(trie.get("aby"), Some(&7));
+
+    // Removed values should still be gone
+    assert_eq!(trie.get("abcde"), None);
+    assert_eq!(trie.get("abcd"), None);
+    assert_eq!(trie.get("abx"), None);
+
+    // Recreating paths should work
+    trie.insert("abx", 8);
+    assert_eq!(trie.get("abx"), Some(&8));
+}
+
+// Test pruning in a complex branching structure
+#[test]
+fn test_complex_branching_prune() {
+    let mut trie = TrieMap::new();
+
+    // Create a structure with multiple branches
+    for i in 0..10 {
+        for j in 0..10 {
+            let key = format!("branch{}leaf{}", i, j);
+            trie.insert(&key, i * 100 + j);
+        }
+    }
+
+    // Remove specific subtrees
+    for j in 0..10 {
+        let key = format!("branch5leaf{}", j);
+        trie.remove(&key);
+    }
+
+    // Count nodes before and after pruning
+    let current_size = trie.len();
+    let pruned = trie.prune();
+    assert!(pruned > 0);
+
+    // Size should remain the same because we're only pruning structure nodes, not value nodes
+    assert_eq!(trie.len(), current_size);
+
+    // Make sure we can still access values from other branches
+    assert_eq!(trie.get("branch1leaf1"), Some(&101));
+    assert_eq!(trie.get("branch9leaf9"), Some(&909));
+
+    // And the removed branch should stay removed
+    assert_eq!(trie.get("branch5leaf5"), None);
+}
+
+// Test pruning efficiency: it should only prune what's necessary
+#[test]
+fn test_prune_efficiency() {
+    let mut trie = TrieMap::new();
+
+    // Create paths with shared prefixes
+    trie.insert("abc", 1);
+    trie.insert("abcd", 2);
+    trie.insert("abce", 3);
+
+    // Remove only one leaf
+    trie.remove("abcd");
+
+    // First prune should remove some nodes
+    let first_prune = trie.prune();
+    assert!(first_prune > 0);
+
+    // Second prune should not remove anything more
+    let second_prune = trie.prune();
+    assert_eq!(second_prune, 0);
+
+    // Remaining values should be intact
+    assert_eq!(trie.get("abc"), Some(&1));
+    assert_eq!(trie.get("abce"), Some(&3));
+}
+
+// Test pruning a large number of paths
+#[test]
+fn test_prune_large_dataset() {
+    let mut trie = TrieMap::new();
+
+    // Insert 1000 items
+    for i in 0..1000 {
+        let key = format!("key{}", i);
+        trie.insert(key, i);
+    }
+
+    // Remove half of them
+    for i in 0..500 {
+        let key = format!("key{}", i);
+        trie.remove(&key);
+    }
+
+    // Prune should work efficiently
+    let start = std::time::Instant::now();
+    let pruned = trie.prune();
+    let duration = start.elapsed();
+
+    assert!(pruned > 0);
+    println!("Pruned {} nodes in {:?}", pruned, duration);
+
+    // Should still have the remaining items
+    for i in 500..1000 {
+        let key = format!("key{}", i);
+        assert_eq!(trie.get(&key), Some(&i));
+    }
+}
+
+// Test pruning when removing non-leaf nodes
+#[test]
+fn test_prune_with_non_leaf_removals() {
+    let mut trie = TrieMap::new();
+
+    // Create a path where internal nodes also have values
+    trie.insert("a", 1);
+    trie.insert("ab", 2);
+    trie.insert("abc", 3);
+    trie.insert("abcd", 4);
+
+    // Remove an internal node
+    trie.remove("ab");
+
+    // Prune should not remove anything because all paths are still used
+    let pruned = trie.prune();
+    assert_eq!(pruned, 0);
+
+    // Values should remain accessible
+    assert_eq!(trie.get("a"), Some(&1));
+    assert_eq!(trie.get("abc"), Some(&3));
+    assert_eq!(trie.get("abcd"), Some(&4));
+
+    // Now remove all the deeper nodes
+    trie.remove("abc");
+    trie.remove("abcd");
+
+    // Prune should now remove those nodes
+    let pruned = trie.prune();
+    assert!(pruned > 0);
+
+    // Only root node value should remain
+    assert_eq!(trie.get("a"), Some(&1));
+}
+
+// Test that pruning and our improvements don't break the Entry API
+#[test]
+fn test_entry_api_with_pruning() {
+    let mut trie = TrieMap::new();
+
+    // Set up some initial data
+    trie.insert("key1", 1);
+    trie.insert("key2", 2);
+
+    // Remove and prune
+    trie.remove("key2");
+    trie.prune();
+
+    // Entry API should still work
+    trie.entry("key1").and_modify(|v| *v += 10);
+    trie.entry("key2").or_insert(20);
+    trie.entry("key3").or_insert_with(|| 30);
+
+    // Check values
+    assert_eq!(trie.get("key1"), Some(&11));
+    assert_eq!(trie.get("key2"), Some(&20));
+    assert_eq!(trie.get("key3"), Some(&30));
+}
+
+// Test that removing all nodes and pruning leaves an empty but functional trie
+#[test]
+fn test_remove_all_and_prune() {
+    let mut trie = TrieMap::new();
+
+    // Insert and then remove everything
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+    trie.insert("c", 3);
+
+    trie.remove("a");
+    trie.remove("b");
+    trie.remove("c");
+
+    // Prune should remove all internal nodes
+    let pruned = trie.prune();
+    assert!(pruned > 0);
+
+    // Trie should be empty but still functional
+    assert_eq!(trie.len(), 0);
+    assert!(trie.is_empty());
+
+    // Should be able to insert new items
+    trie.insert("new", 42);
+    assert_eq!(trie.get("new"), Some(&42));
+}
+
+// Test repeated remove/insert/prune cycles
+#[test]
+fn test_remove_insert_prune_cycles() {
+    let mut trie = TrieMap::new();
+
+    for cycle in 0..5 {
+        // Insert items
+        for i in 0..10 {
+            let key = format!("cycle{}item{}", cycle, i);
+            trie.insert(&key, i);
+        }
+
+        // Remove half
+        for i in 0..5 {
+            let key = format!("cycle{}item{}", cycle, i);
+            trie.remove(&key);
+        }
+
+        // Prune
+        trie.prune();
+
+        // Check remaining items
+        for i in 5..10 {
+            let key = format!("cycle{}item{}", cycle, i);
+            assert_eq!(trie.get(&key), Some(&i));
+        }
+    }
+
+    // Final size should be predictable
+    assert_eq!(trie.len(), 5 * 5); // 5 cycles, 5 items remaining per cycle
+}
+
 // Test for the edge case where idx >= current.children.len()
 #[test]
 fn test_remove_with_corrupted_trie() {
