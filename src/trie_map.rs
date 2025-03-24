@@ -651,16 +651,18 @@ impl<T> TrieMap<T> {
 
                     let child = &current.children[child_idx];
                     if delete_child && child.data_idx.is_none() && child.children.is_empty() {
-                        let mut new_children = Vec::with_capacity(current.children.len() - 1);
-                        for i in 0..current.children.len() {
+                        let current_size = current.children.len();
+                        let mut new_children = self.pool.get(current_size - 1);
+                        let mut new_idx = 0;
+
+                        for i in 0..current_size {
                             if i != child_idx {
-                                new_children.push(std::mem::replace(
-                                    &mut current.children[i],
-                                    TrieNode::new(),
-                                ));
+                                mem::swap(&mut new_children[new_idx], &mut current.children[i]);
+                                new_idx += 1;
                             }
                         }
-                        current.children = new_children.into_boxed_slice();
+                        let old_children = mem::replace(&mut current.children, new_children);
+                        self.pool.put(old_children);
 
                         clear_bit(&mut current.is_present, byte);
 
