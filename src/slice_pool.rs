@@ -10,16 +10,13 @@ pub(crate) struct SlicePool {
 impl SlicePool {
     /// Creates a new empty slice pool
     pub fn new() -> Self {
-        let pools = std::array::from_fn(|_| Vec::new());
+        let pools = std::array::from_fn(|_| Vec::with_capacity(1024));
         SlicePool { pools }
     }
     /// Gets a boxed slice of the specified length from the pool, or creates a new one
     pub fn get(&mut self, len: usize) -> Box<[TrieNode]> {
-        if len == 0 {
-            return Box::new([]);
-        }
         let idx = len.max(256);
-        if let Some(slice) = self.pools[idx as usize].pop() {
+        if let Some(slice) = unsafe { self.pools.get_unchecked_mut(idx as usize) }.pop() {
             return slice;
         }
         let mut vec = Vec::with_capacity(len as usize);
@@ -32,13 +29,8 @@ impl SlicePool {
     /// Returns a boxed slice to the pool for future reuse
     pub fn put(&mut self, slice: Box<[TrieNode]>) {
         let len = slice.len();
-
-        if len == 0 {
-            return; // Don't pool empty slices
-        }
-
-        let idx = len.min(255);
-        self.pools[idx].push(slice);
+        let idx = len;
+        unsafe { self.pools.get_unchecked_mut(idx as usize) }.push(slice);
     }
 
     /// Clears all pools, dropping all stored slices
