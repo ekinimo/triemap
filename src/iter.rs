@@ -18,7 +18,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     type Item = (Vec<u8>, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((key_slice, data_idx)) = self.iter.next() {
+        for (key_slice, data_idx) in self.iter.by_ref() {
             if data_idx < self.data.len() {
                 if let Some(value) = &self.data[data_idx] {
                     return Some((Vec::from(&*key_slice), value));
@@ -85,7 +85,7 @@ pub struct DrainIter<'a, T> {
     pub(crate) root: TrieNodeIdx,
 }
 
-impl<'a, T> Iterator for DrainIter<'a, T> {
+impl<T> Iterator for DrainIter<'_, T> {
     type Item = (Vec<u8>, T);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -136,7 +136,7 @@ impl<'a, T> Iterator for DrainIter<'a, T> {
     }
 }
 
-impl<'a, T> Drop for DrainIter<'a, T> {
+impl<T> Drop for DrainIter<'_, T> {
     fn drop(&mut self) {
         // Continue removing remaining items
         while self.next().is_some() {}
@@ -153,7 +153,7 @@ impl<'a, T> Iterator for PrefixIter<'a, T> {
     type Item = (Vec<u8>, &'a T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((key_slice, data_idx)) = self.iter.next() {
+        for (key_slice, data_idx) in self.iter.by_ref() {
             if data_idx < self.data.len() {
                 if let Some(value) = &self.data[data_idx] {
                     return Some((Vec::from(&*key_slice), value));
@@ -213,7 +213,7 @@ impl<T> Iterator for IntoIter<T> {
     type Item = (Vec<u8>, T);
 
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some((key_slice, data_idx)) = self.iter.next() {
+        for (key_slice, data_idx) in self.iter.by_ref() {
             if data_idx < self.data.len() {
                 if let Some(value) = self.data[data_idx].take() {
                     let key = Vec::from(&*key_slice);

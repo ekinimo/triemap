@@ -103,7 +103,7 @@ impl<T: Clone> Clone for TrieMap<T> {
         TrieMap {
             data: self.data.clone(),
             free_indices: self.free_indices.clone(),
-            root: self.root.clone(),
+            root: self.root,
             size: self.size,
             pool: self.pool.clone(),
         }

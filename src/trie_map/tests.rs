@@ -508,7 +508,7 @@ fn test_remove_all_and_prune() {
 
     // Prune should remove all internal nodes
     let pruned = trie.prune();
-    assert_eq!(true, pruned > 0, "pruned count is {pruned}");
+    assert!(pruned > 0, "pruned count is {pruned}");
 
     // Trie should be empty but still functional
     assert_eq!(trie.len(), 0);

@@ -180,18 +180,18 @@ impl SlicePool {
     pub(crate) fn into_keys_and_indices(self, root_idx: TrieNodeIdx) -> OwnedKeysAndDataIdx {
         OwnedKeysAndDataIdx::new(self.nodes, root_idx)
     }
-    pub(crate) fn keys<'a>(&'a self, root_idx: TrieNodeIdx) -> KeysIterator<'a> {
+    pub(crate) fn keys(&self, root_idx: TrieNodeIdx) -> KeysIterator<'_> {
         KeysIterator::new(self, root_idx)
     }
 
-    pub(crate) fn keys_and_indices<'a>(&'a self, root_idx: TrieNodeIdx) -> KeysAndDataIdx<'a> {
+    pub(crate) fn keys_and_indices(&self, root_idx: TrieNodeIdx) -> KeysAndDataIdx<'_> {
         KeysAndDataIdx::new(self, root_idx)
     }
-    pub(crate) fn prefix_keys_and_indices<'a>(
-        &'a self,
+    pub(crate) fn prefix_keys_and_indices(
+        &self,
         root_idx: TrieNodeIdx,
         prefix: Vec<u8>,
-    ) -> PrefixKeysAndDataIdx<'a> {
+    ) -> PrefixKeysAndDataIdx<'_> {
         PrefixKeysAndDataIdx::new(self, root_idx, prefix)
     }
     #[inline(always)]
@@ -214,7 +214,7 @@ impl<'a> KeysIterator<'a> {
     }
 }
 
-impl<'a> Iterator for KeysIterator<'a> {
+impl Iterator for KeysIterator<'_> {
     type Item = Box<[u8]>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -261,7 +261,7 @@ impl<'a> KeysAndDataIdx<'a> {
     }
 }
 
-impl<'a> Iterator for KeysAndDataIdx<'a> {
+impl Iterator for KeysAndDataIdx<'_> {
     type Item = (Box<[u8]>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -325,7 +325,7 @@ impl<'a> PrefixKeysAndDataIdx<'a> {
     }
 }
 
-impl<'a> Iterator for PrefixKeysAndDataIdx<'a> {
+impl Iterator for PrefixKeysAndDataIdx<'_> {
     type Item = (Box<[u8]>, usize);
 
     fn next(&mut self) -> Option<Self::Item> {
