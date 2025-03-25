@@ -1,13 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
-use std::env::set_current_dir;
 use std::hash::{Hash, Hasher};
 use std::ops::{Index, IndexMut};
-use std::{clone, mem};
 
 use crate::as_bytes::AsBytes;
 use crate::entry::{Entry, OccupiedEntry, VacantEntry};
-use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
-use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode, TrieNodeIdx};
+use crate::iter::{DrainIter, Iter, PrefixIter, PrefixKeys, PrefixValues, Values};
+use crate::node::{test_bit, TrieNodeIdx};
 use crate::slice_pool::{KeysIterator, SlicePool};
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
@@ -343,10 +341,7 @@ impl<T> TrieMap<T> {
             if !test_bit(&current_node.is_present, byte) {
                 current_id = self.pool.add_child(current_id, byte);
             } else {
-                current_id = self
-                    .pool
-                    .get_child_idx(current_id, byte)
-                    .expect("Child should exist if bit is set");
+                current_id = self.pool.get_child_idx_unchecked(current_id, byte);
             }
         }
         let idx = if let Some(free_idx) = self.free_indices.pop() {
@@ -387,12 +382,8 @@ impl<T> TrieMap<T> {
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => return None, // This shouldn't happen, but handle it just in case
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
-
         let current = self.pool.get_node(current_id);
         current.data_idx.and_then(|idx| self.data[idx].as_ref())
     }
@@ -421,10 +412,7 @@ impl<T> TrieMap<T> {
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => return None, // This shouldn't happen, but handle it just in case
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
 
         let current = self.pool.get_node(current_id);
@@ -485,15 +473,7 @@ impl<T> TrieMap<T> {
                 });
             }
 
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => {
-                    return Entry::Vacant(VacantEntry {
-                        trie: self,
-                        key: key_bytes,
-                    });
-                }
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
 
         let current = self.pool.get_node(current_id);
@@ -545,13 +525,7 @@ impl<T> TrieMap<T> {
                 break;
             }
 
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => {
-                    found = false;
-                    break;
-                }
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
 
         if found {
@@ -596,10 +570,8 @@ impl<T> TrieMap<T> {
                 return None;
             }
 
-            match self.pool.get_child_idx(node_idx, byte) {
-                Some(next_node_idx) => path.push((next_node_idx, byte)),
-                None => return None,
-            }
+            let next_node_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+            path.push((next_node_idx, byte));
         }
 
         let (target_node_idx, _) = path.last().unwrap();
@@ -685,13 +657,11 @@ impl<T> TrieMap<T> {
 
             for byte in 0..=255u8 {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_idx) = pool.get_child_idx(node_idx, byte) {
+                    let child_idx = pool.get_child_idx_unchecked(node_idx, byte);
+                    let keep_child = prune_node(pool, child_idx, pruned);
 
-                        let keep_child = prune_node(pool, child_idx, pruned);
-
-                        if !keep_child {
-                            to_prune.push(byte);
-                        }
+                    if !keep_child {
+                        to_prune.push(byte);
                     }
                 }
             }
@@ -709,11 +679,10 @@ impl<T> TrieMap<T> {
         let mut to_prune = Vec::new();
         for byte in 0..=255u8 {
             if test_bit(&root_node.is_present, byte) {
-                if let Some(child_idx) = self.pool.get_child_idx(self.root, byte) {
-                    let keep_child = prune_node(&mut self.pool, child_idx, &mut pruned_count);
-                    if !keep_child {
-                        to_prune.push(byte);
-                    }
+                let child_idx = self.pool.get_child_idx_unchecked(self.root, byte);
+                let keep_child = prune_node(&mut self.pool, child_idx, &mut pruned_count);
+                if !keep_child {
+                    to_prune.push(byte);
                 }
             }
         }
@@ -907,7 +876,6 @@ impl<T> TrieMap<T> {
         }
     }
 
-
     /// Returns `true` if the map contains any keys starting with the given prefix.
     ///
     /// # Examples
@@ -938,10 +906,7 @@ impl<T> TrieMap<T> {
                 return false; // Byte not present in current node
             }
 
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => return false, // Child doesn't exist
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
 
         let current = self.pool.get_node(current_id);
@@ -960,9 +925,8 @@ impl<T> TrieMap<T> {
 
             for byte in 0..=255u8 {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_id) = self.pool.get_child_idx(node_id, byte) {
-                        stack.push(child_id);
-                    }
+                    let child_id = self.pool.get_child_idx_unchecked(node_id, byte);
+                    stack.push(child_id);
                 }
             }
         }
@@ -1098,15 +1062,7 @@ impl<T> TrieMap<T> {
                 });
             }
 
-            match self.pool.get_child_idx(current_id, byte) {
-                Some(child_id) => current_id = child_id,
-                None => {
-                    return Entry::Vacant(VacantEntry {
-                        trie: self,
-                        key: key_bytes,
-                    });
-                }
-            }
+            current_id = self.pool.get_child_idx_unchecked(current_id, byte);
         }
 
         let current = self.pool.get_node(current_id);

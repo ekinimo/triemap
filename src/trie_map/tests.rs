@@ -1,5 +1,5 @@
 use super::*;
-use crate::node::{set_bit, test_bit, TrieNode};
+use crate::node::{clear_bit, popcount, set_bit, test_bit};
 use std::hash::DefaultHasher;
 
 #[test]

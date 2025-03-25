@@ -16,7 +16,7 @@ impl SlicePool {
     }
 
     /// Allocates a slice of nodes with the specified length
-    #[inline]
+    #[inline(always)]
     pub(crate) fn allocate_slice(&mut self, len: usize) -> TrieNodeIdx {
         let idx = len;
         if let Some(slice) = unsafe { self.pools.get_unchecked_mut(idx) }.pop() {
@@ -29,13 +29,14 @@ impl SlicePool {
     }
 
     /// Returns a node slice to the pool for future reuse
-    #[inline]
+    #[inline(always)]
     pub(crate) fn release_slice(&mut self, slice: TrieNodeIdx, len: usize) {
         let idx = len;
         unsafe { self.pools.get_unchecked_mut(idx) }.push(slice);
     }
 
     /// Clears all pools, dropping all stored slices
+    #[inline(always)]
     pub(crate) fn clear(&mut self) {
         for pool in &mut self.pools {
             pool.clear();
@@ -45,18 +46,19 @@ impl SlicePool {
     }
 
     /// Gets a node at the specified index
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_node(&self, idx: TrieNodeIdx) -> &TrieNode {
         unsafe { self.nodes.get_unchecked(idx.0) }
     }
 
     /// Gets a mutable reference to a node at the specified index
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_node_mut(&mut self, idx: TrieNodeIdx) -> &mut TrieNode {
         unsafe { self.nodes.get_unchecked_mut(idx.0) }
     }
 
     /// Inserts a new node into a slice at the specified position, returning the new slice
+    #[inline(always)]
     pub(crate) fn insert_into_slice(
         &mut self,
         current_idx: TrieNodeIdx,
@@ -83,6 +85,7 @@ impl SlicePool {
     }
 
     /// Removes a node from a slice at the specified position, returning the new slice
+    #[inline(always)]
     pub(crate) fn remove_from_slice(
         &mut self,
         current_idx: TrieNodeIdx,
@@ -110,7 +113,7 @@ impl SlicePool {
     }
 
     /// Gets the child node index for a given byte in a trie node
-    #[inline]
+    #[inline(always)]
     pub(crate) fn get_child_idx(&self, node_idx: TrieNodeIdx, byte: u8) -> Option<TrieNodeIdx> {
         let node = self.get_node(node_idx);
 
@@ -126,22 +129,24 @@ impl SlicePool {
         }
     }
 
+    #[inline(always)]
+    pub(crate) fn get_child_idx_unchecked(&self, node_idx: TrieNodeIdx, byte: u8) -> TrieNodeIdx {
+        let node = self.get_node(node_idx);
+        let child_pos = popcount(&node.is_present, byte) as usize;
+        TrieNodeIdx(node.children.0 + child_pos)
+    }
+
+    #[inline(always)]
     pub(crate) fn add_child(&mut self, node_idx: TrieNodeIdx, byte: u8) -> TrieNodeIdx {
         let node = self.get_node(node_idx);
         if test_bit(&node.is_present, byte) {
-            return self
-                .get_child_idx(node_idx, byte)
-                .expect("Child should exist if bit is set");
+            return self.get_child_idx_unchecked(node_idx, byte);
         }
 
         let child_count = node.child_len() as usize;
         let insert_pos = popcount(&node.is_present, byte) as usize;
 
-        let current_children = if node.children.0 == usize::MAX {
-            self.allocate_slice(0) // Allocate an empty slice
-        } else {
-            node.children
-        };
+        let current_children = node.children;
 
         let new_children = self.insert_into_slice(current_children, child_count, insert_pos);
 
@@ -152,6 +157,7 @@ impl SlicePool {
         TrieNodeIdx(new_children.0 + insert_pos)
     }
     /// Removes a child node for a given byte in a trie node
+    #[inline(always)]
     pub(crate) fn remove_child(&mut self, node_idx: TrieNodeIdx, byte: u8) -> bool {
         let node = self.get_node(node_idx);
 
@@ -178,7 +184,7 @@ impl SlicePool {
         KeysIterator::new(self, root_idx)
     }
 
-    pub(crate) fn keys_and_indices<'a>(&'a self, root_idx: TrieNodeIdx) -> KeysAndDataIdx {
+    pub(crate) fn keys_and_indices<'a>(&'a self, root_idx: TrieNodeIdx) -> KeysAndDataIdx<'a> {
         KeysAndDataIdx::new(self, root_idx)
     }
     pub(crate) fn prefix_keys_and_indices<'a>(
@@ -188,7 +194,7 @@ impl SlicePool {
     ) -> PrefixKeysAndDataIdx<'a> {
         PrefixKeysAndDataIdx::new(self, root_idx, prefix)
     }
-    #[inline]
+    #[inline(always)]
     pub(crate) fn has_children(&self, node_idx: TrieNodeIdx) -> bool {
         let node = self.get_node(node_idx);
         node.child_len() > 0
@@ -218,11 +224,10 @@ impl<'a> Iterator for KeysIterator<'a> {
             if node.data_idx.is_some() {
                 for byte in (0..=255u8).rev() {
                     if test_bit(&node.is_present, byte) {
-                        if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                            let mut child_path = path.clone();
-                            child_path.push(byte);
-                            self.stack.push((child_idx, child_path));
-                        }
+                        let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                        let mut child_path = path.clone();
+                        child_path.push(byte);
+                        self.stack.push((child_idx, child_path));
                     }
                 }
 
@@ -231,11 +236,10 @@ impl<'a> Iterator for KeysIterator<'a> {
 
             for byte in (0..=255u8).rev() {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                        let mut child_path = path.clone();
-                        child_path.push(byte);
-                        self.stack.push((child_idx, child_path));
-                    }
+                    let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                    let mut child_path = path.clone();
+                    child_path.push(byte);
+                    self.stack.push((child_idx, child_path));
                 }
             }
         }
@@ -278,11 +282,10 @@ impl<'a> Iterator for KeysAndDataIdx<'a> {
 
             for byte in (0..=255u8).rev() {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                        let mut child_path = path.clone();
-                        child_path.push(byte);
-                        self.stack.push((child_idx, child_path));
-                    }
+                    let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                    let mut child_path = path.clone();
+                    child_path.push(byte);
+                    self.stack.push((child_idx, child_path));
                 }
             }
         }
@@ -309,13 +312,7 @@ impl<'a> PrefixKeysAndDataIdx<'a> {
                 break;
             }
 
-            match pool.get_child_idx(current_idx, byte) {
-                Some(child_idx) => current_idx = child_idx,
-                None => {
-                    found = false;
-                    break;
-                }
-            }
+            current_idx = pool.get_child_idx_unchecked(current_idx, byte);
         }
 
         let stack = if found {
@@ -338,11 +335,10 @@ impl<'a> Iterator for PrefixKeysAndDataIdx<'a> {
             if let Some(data_idx) = node.data_idx {
                 for byte in (0..=255u8).rev() {
                     if test_bit(&node.is_present, byte) {
-                        if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                            let mut child_path = path.clone();
-                            child_path.push(byte);
-                            self.stack.push((child_idx, child_path));
-                        }
+                        let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                        let mut child_path = path.clone();
+                        child_path.push(byte);
+                        self.stack.push((child_idx, child_path));
                     }
                 }
 
@@ -351,11 +347,10 @@ impl<'a> Iterator for PrefixKeysAndDataIdx<'a> {
 
             for byte in (0..=255u8).rev() {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                        let mut child_path = path.clone();
-                        child_path.push(byte);
-                        self.stack.push((child_idx, child_path));
-                    }
+                    let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                    let mut child_path = path.clone();
+                    child_path.push(byte);
+                    self.stack.push((child_idx, child_path));
                 }
             }
         }
@@ -381,15 +376,11 @@ impl OwnedKeysAndDataIdx {
         &self.nodes[idx.0]
     }
 
-    fn get_child_idx(&self, node_idx: TrieNodeIdx, byte: u8) -> Option<TrieNodeIdx> {
+    fn get_child_idx_unchecked(&self, node_idx: TrieNodeIdx, byte: u8) -> TrieNodeIdx {
         let node = self.get_node(node_idx);
 
-        if !test_bit(&node.is_present, byte) {
-            return None;
-        }
-
         let child_pos = popcount(&node.is_present, byte) as usize;
-        Some(TrieNodeIdx(node.children.0 + child_pos))
+        TrieNodeIdx(node.children.0 + child_pos)
     }
 }
 
@@ -403,11 +394,10 @@ impl Iterator for OwnedKeysAndDataIdx {
             if let Some(data_idx) = node.data_idx {
                 for byte in (0..=255u8).rev() {
                     if test_bit(&node.is_present, byte) {
-                        if let Some(child_idx) = self.get_child_idx(node_idx, byte) {
-                            let mut child_path = path.clone();
-                            child_path.push(byte);
-                            self.stack.push((child_idx, child_path));
-                        }
+                        let child_idx = self.get_child_idx_unchecked(node_idx, byte);
+                        let mut child_path = path.clone();
+                        child_path.push(byte);
+                        self.stack.push((child_idx, child_path));
                     }
                 }
 
@@ -416,11 +406,10 @@ impl Iterator for OwnedKeysAndDataIdx {
 
             for byte in (0..=255u8).rev() {
                 if test_bit(&node.is_present, byte) {
-                    if let Some(child_idx) = self.get_child_idx(node_idx, byte) {
-                        let mut child_path = path.clone();
-                        child_path.push(byte);
-                        self.stack.push((child_idx, child_path));
-                    }
+                    let child_idx = self.get_child_idx_unchecked(node_idx, byte);
+                    let mut child_path = path.clone();
+                    child_path.push(byte);
+                    self.stack.push((child_idx, child_path));
                 }
             }
         }

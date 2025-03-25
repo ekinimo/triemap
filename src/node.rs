@@ -22,7 +22,7 @@ impl TrieNode {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub(crate) fn child_len(&self) -> u32 {
         self.is_present
             .iter()
@@ -30,19 +30,19 @@ impl TrieNode {
     }
 }
 
-#[inline]
+#[inline(always)]
 pub(crate) fn set_bit(a: &mut [u64; 4], k: u8) {
     a[(k >> 6) as usize] |= 1u64 << (k & 0x3F);
 }
-#[inline]
+#[inline(always)]
 pub(crate) fn clear_bit(a: &mut [u64; 4], k: u8) {
     a[(k >> 6) as usize] &= !(1u64 << (k & 0x3F));
 }
-#[inline]
+#[inline(always)]
 pub(crate) fn test_bit(a: &[u64; 4], k: u8) -> bool {
     (a[(k >> 6) as usize] & (1u64 << (k & 0x3F))) != 0
 }
-#[inline]
+#[inline(always)]
 pub(crate) fn popcount(a: &[u64; 4], k: u8) -> u16 {
     // Calculate indices for full chunks and remainder
     let full_chunks = (k >> 6) as usize;

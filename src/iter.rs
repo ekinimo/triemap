@@ -104,12 +104,8 @@ impl<'a, T> Iterator for DrainIter<'a, T> {
                     break;
                 }
 
-                if let Some(child_idx) = self.pool.get_child_idx(current_idx, byte) {
-                    current_idx = child_idx;
-                } else {
-                    found = false;
-                    break;
-                }
+                let child_idx = self.pool.get_child_idx_unchecked(current_idx, byte);
+                current_idx = child_idx;
             }
 
             if found {
