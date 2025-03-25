@@ -1,13 +1,14 @@
 use std::collections::{BTreeMap, HashMap};
+use std::env::set_current_dir;
 use std::hash::{Hash, Hasher};
-use std::mem;
 use std::ops::{Index, IndexMut};
+use std::{clone, mem};
 
 use crate::as_bytes::AsBytes;
 use crate::entry::{Entry, OccupiedEntry, VacantEntry};
 use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
-use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode};
-use crate::slice_pool::SlicePool;
+use crate::node::{clear_bit, popcount, set_bit, test_bit, TrieNode, TrieNodeIdx};
+use crate::slice_pool::{KeysIterator, SlicePool};
 
 /// A `TrieMap` is a key-value data structure that uses a trie (prefix tree) for storage
 /// and retrieval of data.
@@ -55,7 +56,7 @@ use crate::slice_pool::SlicePool;
 pub struct TrieMap<T> {
     pub(crate) data: Vec<Option<T>>,
     pub(crate) free_indices: Vec<usize>,
-    pub(crate) root: TrieNode,
+    pub(crate) root: TrieNodeIdx,
     pub(crate) size: usize,
     pub(crate) pool: SlicePool,
 }
@@ -106,7 +107,7 @@ impl<T: Clone> Clone for TrieMap<T> {
             free_indices: self.free_indices.clone(),
             root: self.root.clone(),
             size: self.size,
-            pool: SlicePool::new(),
+            pool: self.pool.clone(),
         }
     }
 }
@@ -134,13 +135,7 @@ impl<T: PartialEq> PartialEq for TrieMap<T> {
             return false;
         }
 
-        let mut self_pairs: Vec<_> = self.iter().collect();
-        let mut other_pairs: Vec<_> = other.iter().collect();
-
-        self_pairs.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
-        other_pairs.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
-
-        self_pairs == other_pairs
+        self.iter().zip(other.iter()).all(|(a, b)| a == b)
     }
 }
 
@@ -243,7 +238,7 @@ impl<T> TrieMap<T> {
         TrieMap {
             data: Vec::new(),
             free_indices: Vec::new(),
-            root: TrieNode::new(),
+            root: TrieNodeIdx(0),
             size: 0,
             pool: SlicePool::new(),
         }
@@ -265,7 +260,7 @@ impl<T> TrieMap<T> {
         TrieMap {
             data: Vec::with_capacity(capacity),
             free_indices: Vec::new(),
-            root: TrieNode::new(),
+            root: TrieNodeIdx(0),
             size: 0,
             pool: SlicePool::new(),
         }
@@ -319,7 +314,8 @@ impl<T> TrieMap<T> {
     pub fn clear(&mut self) {
         self.data.clear();
         self.free_indices.clear();
-        self.root = TrieNode::new();
+        self.pool.clear();
+        self.root = TrieNodeIdx(0);
         self.size = 0;
     }
 
@@ -340,60 +336,36 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn insert<K: AsBytes>(&mut self, key: K, value: T) {
         let bytes = key.as_bytes();
-        let mut current = &mut self.root;
+        let mut current_id = self.root;
 
         for &byte in bytes {
-            let idx = popcount(&current.is_present, byte) as usize;
-
-            if !test_bit(&current.is_present, byte) {
-                let current_size = current.children.len();
-                let mut new_children = self.pool.get(current_size + 1);
-
-                for i in 0..idx {
-                    mem::swap(&mut new_children[i], &mut current.children[i]);
-                    //new_children.push(std::mem::replace(&mut current.children[i], TrieNode::new()));
-                }
-
-                new_children[idx] = TrieNode::new();
-
-                for i in idx..current_size {
-                    mem::swap(&mut new_children[i + 1], &mut current.children[i]);
-                }
-
-                let old_children = mem::replace(&mut current.children, new_children);
-                self.pool.put(old_children);
-
-                set_bit(&mut current.is_present, byte);
+            let current_node = self.pool.get_node(current_id);
+            if !test_bit(&current_node.is_present, byte) {
+                current_id = self.pool.add_child(current_id, byte);
+            } else {
+                current_id = self
+                    .pool
+                    .get_child_idx(current_id, byte)
+                    .expect("Child should exist if bit is set");
             }
-
-            current = &mut current.children[idx];
         }
-
         let idx = if let Some(free_idx) = self.free_indices.pop() {
-            // Use a previously freed index
             self.data[free_idx] = Some(value);
             free_idx
         } else {
-            // No free indices, add to the end
             self.data.push(Some(value));
             self.data.len() - 1
         };
 
-        let prev_idx = current.data_idx;
-
-        // Update node to point to the new data index
-        current.data_idx = Some(idx);
-
-        // If this is a new key, increment size
+        let prev_idx = self.pool.get_node(current_id).data_idx;
+        self.pool.get_node_mut(current_id).data_idx = Some(idx);
         if prev_idx.is_none() {
             self.size += 1;
         } else if let Some(prev_idx) = prev_idx {
-            // Free the previous index for reuse
             self.data[prev_idx] = None;
             self.free_indices.push(prev_idx);
         }
     }
-
     /// Returns a reference to the value corresponding to the key.
     ///
     /// # Examples
@@ -407,24 +379,23 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn get<K: AsBytes>(&self, key: K) -> Option<&T> {
         let bytes = key.as_bytes();
-        let mut current = &self.root;
+        let mut current_id = self.root;
 
         for &byte in bytes {
+            let current = self.pool.get_node(current_id);
+
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
-
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                return None;
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => return None, // This shouldn't happen, but handle it just in case
             }
-
-            current = &current.children[idx];
         }
 
+        let current = self.pool.get_node(current_id);
         current.data_idx.and_then(|idx| self.data[idx].as_ref())
     }
-
     /// Returns a mutable reference to the value corresponding to the key.
     ///
     /// # Examples
@@ -442,20 +413,21 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn get_mut<K: AsBytes>(&mut self, key: K) -> Option<&mut T> {
         let bytes = key.as_bytes();
-        let mut current = &self.root;
+        let mut current_id = self.root;
 
         for &byte in bytes {
+            let current = self.pool.get_node(current_id);
+
             if !test_bit(&current.is_present, byte) {
                 return None;
             }
-
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                return None;
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => return None, // This shouldn't happen, but handle it just in case
             }
-
-            current = &current.children[idx];
         }
+
+        let current = self.pool.get_node(current_id);
 
         if let Some(idx) = current.data_idx {
             self.data[idx].as_mut()
@@ -463,7 +435,6 @@ impl<T> TrieMap<T> {
             None
         }
     }
-
     /// Returns `true` if the map contains a value for the specified key.
     ///
     /// # Examples
@@ -501,28 +472,33 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn entry<K: AsBytes>(&mut self, key: K) -> Entry<'_, T> {
         let key_bytes = key.as_bytes().to_vec();
+        let mut current_id = self.root;
 
-        let mut current = &self.root;
-        let mut found = true;
-
+        // Try to traverse to the node for this key
         for &byte in &key_bytes {
+            let current = self.pool.get_node(current_id);
+
             if !test_bit(&current.is_present, byte) {
-                found = false;
-                break;
+                return Entry::Vacant(VacantEntry {
+                    trie: self,
+                    key: key_bytes,
+                });
             }
 
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                found = false;
-                break;
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => {
+                    return Entry::Vacant(VacantEntry {
+                        trie: self,
+                        key: key_bytes,
+                    });
+                }
             }
-
-            current = &current.children[idx];
         }
 
-        if found && current.data_idx.is_some() {
-            let data_idx = current.data_idx.unwrap();
+        let current = self.pool.get_node(current_id);
 
+        if let Some(data_idx) = current.data_idx {
             if data_idx < self.data.len() && self.data[data_idx].is_some() {
                 return Entry::Occupied(OccupiedEntry {
                     trie: self,
@@ -554,42 +530,46 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn remove<K: AsBytes>(&mut self, key: K) -> Option<T> {
         let bytes = key.as_bytes();
-
         self.remove_internal(bytes)
     }
 
     fn remove_internal(&mut self, bytes: &[u8]) -> Option<T> {
-        let mut current = &mut self.root;
+        let mut current_id = self.root;
         let mut found = true;
 
         for &byte in bytes {
+            let current = self.pool.get_node(current_id);
+
             if !test_bit(&current.is_present, byte) {
                 found = false;
                 break;
             }
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                found = false;
-                break;
+
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => {
+                    found = false;
+                    break;
+                }
             }
-            current = &mut current.children[idx];
         }
 
-        if found && current.data_idx.is_some() {
-            let data_idx = current.data_idx.unwrap();
+        if found {
+            let current = self.pool.get_node_mut(current_id);
 
-            if data_idx < self.data.len() && self.data[data_idx].is_some() {
-                let value = self.data[data_idx].take();
-                current.data_idx = None;
-                self.free_indices.push(data_idx);
-                self.size -= 1;
-                return value;
+            if let Some(data_idx) = current.data_idx {
+                if data_idx < self.data.len() && self.data[data_idx].is_some() {
+                    let value = self.data[data_idx].take();
+                    current.data_idx = None;
+                    self.free_indices.push(data_idx);
+                    self.size -= 1;
+                    return value;
+                }
             }
         }
 
         None
     }
-
     /// Removes a key from the map, returning the value at the key if the key was previously in the map.
     /// This method also removes the nodes used to register the key
     /// # Examples
@@ -605,153 +585,67 @@ impl<T> TrieMap<T> {
     pub fn remove_and_prune<K: AsBytes>(&mut self, key: K) -> Option<T> {
         let bytes = key.as_bytes();
 
-        self.remove_and_prune_internal(bytes)
-    }
+        let mut path = Vec::with_capacity(bytes.len() + 1);
+        path.push((self.root, 0));
 
-    fn remove_and_prune_internal(&mut self, bytes: &[u8]) -> Option<T> {
-        let mut path = Vec::with_capacity(bytes.len());
-        let mut path_indices = Vec::with_capacity(bytes.len());
+        for &byte in bytes.iter() {
+            let node_idx = path.last().unwrap().0;
+            let node = self.pool.get_node(node_idx);
 
-        let mut current = &self.root;
-
-        for &byte in bytes {
-            if !test_bit(&current.is_present, byte) {
+            if !test_bit(&node.is_present, byte) {
                 return None;
             }
 
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                return None;
+            match self.pool.get_child_idx(node_idx, byte) {
+                Some(next_node_idx) => path.push((next_node_idx, byte)),
+                None => return None,
             }
-
-            path.push(byte);
-            path_indices.push(idx);
-            current = &current.children[idx];
         }
 
-        if let Some(idx) = current.data_idx {
-            if self.data[idx].is_some() {
+        let (target_node_idx, _) = path.last().unwrap();
+        let target_node = self.pool.get_node(*target_node_idx);
+
+        if let Some(data_idx) = target_node.data_idx {
+            if self.data[data_idx].is_some() {
+                let value = self.data[data_idx].take();
+                self.free_indices.push(data_idx);
                 self.size -= 1;
 
-                self.free_indices.push(idx);
+                let mut should_prune = true;
 
-                let value = self.data[idx].take();
-
-                let mut delete_child = true;
-
-                for depth in (0..path.len()).rev() {
-                    let byte = path[depth];
-                    let child_idx = path_indices[depth];
-
-                    let mut current = &mut self.root;
-
-                    for item in path_indices.iter_mut().take(depth) {
-                        current = &mut current.children[*item]
+                for i in (1..path.len()).rev() {
+                    if !should_prune {
+                        break;
                     }
 
-                    let child = &current.children[child_idx];
-                    if delete_child && child.data_idx.is_none() && child.children.is_empty() {
-                        let current_size = current.children.len();
-                        let mut new_children = self.pool.get(current_size - 1);
-                        let mut new_idx = 0;
+                    let (node_idx, byte) = path[i];
+                    let (parent_idx, _) = path[i - 1];
 
-                        for i in 0..current_size {
-                            if i != child_idx {
-                                mem::swap(&mut new_children[new_idx], &mut current.children[i]);
-                                new_idx += 1;
-                            }
+                    let node = self.pool.get_node(node_idx);
+
+                    if node.data_idx.is_none() || self.data[node.data_idx.unwrap()].is_none() {
+                        if node.child_len() == 0 {
+                            self.pool.remove_child(parent_idx, byte);
+                        } else {
+                            should_prune = false;
                         }
-                        let old_children = mem::replace(&mut current.children, new_children);
-                        self.pool.put(old_children);
-
-                        clear_bit(&mut current.is_present, byte);
-
-                        delete_child = current.data_idx.is_none() && current.children.is_empty();
                     } else {
-                        delete_child = false;
+                        should_prune = false;
                     }
                 }
 
-                value
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }
-    pub fn prune(&mut self) -> usize {
-        // We need to avoid having two mutable references to self
-        // Let's extract the nodes we need separately
-        let mut root = std::mem::take(&mut self.root);
-        let slice_pool = &mut self.pool;
-
-        let pruned = Self::prune_node_helper(&mut root, slice_pool);
-
-        // Put the root back
-        self.root = root;
-
-        pruned
-    }
-
-    fn prune_node_helper(node: &mut TrieNode, slice_pool: &mut SlicePool) -> usize {
-        let mut pruned_nodes = 0;
-        let mut bytes_to_clear = Vec::new();
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-                if idx < node.children.len() {
-                    // Recursively prune the child node
-                    let child_pruned = Self::prune_node_helper(&mut node.children[idx], slice_pool);
-                    pruned_nodes += child_pruned;
-
-                    if node.children[idx].data_idx.is_none()
-                        && node.children[idx].children.is_empty()
-                    {
-                        bytes_to_clear.push(byte);
-                    }
-                }
+                return value;
             }
         }
 
-        if !bytes_to_clear.is_empty() {
-            let current_size = node.children.len();
-            let new_size = current_size - bytes_to_clear.len();
-
-            if new_size == 0 {
-                let old_children = std::mem::replace(&mut node.children, Box::new([]));
-                slice_pool.put(old_children);
-            } else {
-                let mut new_children = slice_pool.get(new_size);
-                let mut new_idx = 0;
-
-                for byte in 0..=255u8 {
-                    if test_bit(&node.is_present, byte) && !bytes_to_clear.contains(&byte) {
-                        let idx = popcount(&node.is_present, byte) as usize;
-                        if idx < node.children.len() {
-                            std::mem::swap(&mut new_children[new_idx], &mut node.children[idx]);
-                            new_idx += 1;
-                        }
-                    }
-                }
-
-                let old_children = std::mem::replace(&mut node.children, new_children);
-                slice_pool.put(old_children);
-            }
-
-            pruned_nodes += bytes_to_clear.len();
-            for byte in bytes_to_clear {
-                clear_bit(&mut node.is_present, byte);
-            }
-        }
-
-        pruned_nodes
+        None
     }
     /// Prunes unused nodes from the trie to reclaim memory.
     ///
     /// This method removes all nodes that don't contain values and don't lead to nodes with values.
     /// It's useful to call periodically if you've removed many items from the trie.
+    ///
+    /// Returns the number of nodes that were pruned.
     ///
     /// # Examples
     ///
@@ -767,10 +661,70 @@ impl<T> TrieMap<T> {
     /// // The trie structure still contains nodes for "apple" and "application"
     /// // even though the values have been removed
     ///
-    /// map.prune();
+    /// let pruned_count = map.prune();
+    /// assert!(pruned_count > 0);
     /// // Now the unused nodes have been removed
     /// ```
+    pub fn prune(&mut self) -> usize {
+        let mut pruned_count = 0;
 
+        if self.size == 0 && !self.pool.has_children(self.root) {
+            return 0;
+        }
+
+        fn prune_node(pool: &mut SlicePool, node_idx: TrieNodeIdx, pruned: &mut usize) -> bool {
+            if !pool.has_children(node_idx) {
+                let node = pool.get_node(node_idx);
+                return node.data_idx.is_some() && node.data_idx.unwrap() < usize::MAX;
+            }
+
+            let node = *pool.get_node(node_idx);
+            let has_data = node.data_idx.is_some();
+
+            let mut to_prune = Vec::new();
+
+            for byte in 0..=255u8 {
+                if test_bit(&node.is_present, byte) {
+                    if let Some(child_idx) = pool.get_child_idx(node_idx, byte) {
+
+                        let keep_child = prune_node(pool, child_idx, pruned);
+
+                        if !keep_child {
+                            to_prune.push(byte);
+                        }
+                    }
+                }
+            }
+
+            for byte in to_prune {
+                pool.remove_child(node_idx, byte);
+                *pruned += 1;
+            }
+
+            has_data || pool.has_children(node_idx)
+        }
+
+        let root_node = *self.pool.get_node(self.root);
+
+        let mut to_prune = Vec::new();
+        for byte in 0..=255u8 {
+            if test_bit(&root_node.is_present, byte) {
+                if let Some(child_idx) = self.pool.get_child_idx(self.root, byte) {
+                    let keep_child = prune_node(&mut self.pool, child_idx, &mut pruned_count);
+                    if !keep_child {
+                        to_prune.push(byte);
+                    }
+                }
+            }
+        }
+
+        for byte in to_prune {
+            self.pool.remove_child(self.root, byte);
+            pruned_count += 1;
+        }
+
+        pruned_count
+    }
     /// Returns an iterator over the key-value pairs of the map.
     ///
     /// # Examples
@@ -786,36 +740,10 @@ impl<T> TrieMap<T> {
     /// }
     /// ```
     pub fn iter(&self) -> Iter<'_, T> {
-        let mut pairs = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-
-        self.collect_pairs(&self.root, &mut current_key, &mut pairs);
-
-        Iter { pairs, position: 0 }
-    }
-
-    fn collect_pairs<'a>(
-        &'a self,
-        node: &TrieNode,
-        current_key: &mut Vec<u8>,
-        pairs: &mut Vec<(Vec<u8>, &'a T)>,
-    ) {
-        if let Some(idx) = node.data_idx {
-            if let Some(value) = self.data[idx].as_ref() {
-                pairs.push((current_key.clone(), value));
-            }
-        }
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-
-                current_key.push(byte);
-
-                self.collect_pairs(&node.children[idx], current_key, pairs);
-
-                current_key.pop();
-            }
+        let iter = self.pool.keys_and_indices(self.root);
+        Iter {
+            data: &self.data,
+            iter,
         }
     }
 
@@ -833,8 +761,8 @@ impl<T> TrieMap<T> {
     ///     println!("Key: {}", String::from_utf8_lossy(&key));
     /// }
     /// ```
-    pub fn keys(&self) -> Keys<'_, T> {
-        Keys { inner: self.iter() }
+    pub fn keys(&self) -> KeysIterator<'_> {
+        self.pool.keys(self.root)
     }
 
     /// Returns an iterator over the values of the map.
@@ -873,39 +801,16 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.get("b"), Some(&12));
     /// ```
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (Vec<u8>, &mut T)> + '_ {
-        let mut keys_indices = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-        Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
-        let map: std::collections::HashMap<_, _> =
-            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
+        let keys_indices = self.pool.keys_and_indices(self.root);
+        let map: std::collections::HashMap<_, Vec<_>> = keys_indices
+            .into_iter()
+            .map(|(x, y)| (y, x.into()))
+            .collect();
 
         self.data
             .iter_mut()
             .enumerate()
             .filter_map(move |(idx, opt)| opt.as_mut().map(|value| (map[&idx].clone(), value)))
-    }
-
-    /// Private helper to collect all keys and their associated data indices
-    fn collect_keys_indices(
-        node: &TrieNode,
-        current_key: &mut Vec<u8>,
-        keys_indices: &mut Vec<(Vec<u8>, usize)>,
-    ) {
-        if let Some(idx) = node.data_idx {
-            keys_indices.push((current_key.clone(), idx));
-        }
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-
-                if idx < node.children.len() {
-                    current_key.push(byte);
-                    Self::collect_keys_indices(&node.children[idx], current_key, keys_indices);
-                    current_key.pop();
-                }
-            }
-        }
     }
 
     /// Returns a mutable iterator over the values of the map.
@@ -945,16 +850,14 @@ impl<T> TrieMap<T> {
     /// assert_eq!(iter.next().unwrap().1, &2);
     /// assert!(iter.next().is_none());
     /// ```
-    pub fn prefix_iter<K: AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
-        let mut result = Vec::new();
-        if let Some(node) = self.find_node(prefix.as_bytes()) {
-            let mut prefix_vec = prefix.as_bytes().to_vec();
-            self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
-        }
+    pub fn prefix_iter<K: crate::AsBytes>(&self, prefix: K) -> PrefixIter<'_, T> {
+        let prefix_bytes = prefix.as_bytes().to_vec();
+
+        let iter = self.pool.prefix_keys_and_indices(self.root, prefix_bytes);
 
         PrefixIter {
-            pairs: result,
-            position: 0,
+            data: &self.data,
+            iter,
         }
     }
 
@@ -1004,50 +907,6 @@ impl<T> TrieMap<T> {
         }
     }
 
-    /// Finds a node matching the given prefix
-    fn find_node(&self, bytes: &[u8]) -> Option<&TrieNode> {
-        let mut current = &self.root;
-
-        for &byte in bytes {
-            if !test_bit(&current.is_present, byte) {
-                return None;
-            }
-
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                return None;
-            }
-
-            current = &current.children[idx];
-        }
-
-        Some(current)
-    }
-
-    /// Collects all prefix matches from a node
-    fn collect_prefix_matches<'a>(
-        &'a self,
-        node: &TrieNode,
-        prefix: &mut Vec<u8>,
-        result: &mut Vec<(Vec<u8>, &'a T)>,
-    ) {
-        if let Some(idx) = node.data_idx {
-            if let Some(value) = self.data[idx].as_ref() {
-                result.push((prefix.clone(), value));
-            }
-        }
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-                if idx < node.children.len() {
-                    prefix.push(byte);
-                    self.collect_prefix_matches(&node.children[idx], prefix, result);
-                    prefix.pop();
-                }
-            }
-        }
-    }
 
     /// Returns `true` if the map contains any keys starting with the given prefix.
     ///
@@ -1065,31 +924,48 @@ impl<T> TrieMap<T> {
     pub fn starts_with<K: AsBytes>(&self, prefix: K) -> bool {
         let bytes = prefix.as_bytes();
 
-        if let Some(node) = self.find_node(bytes) {
-            node.data_idx.is_some() && self.data[node.data_idx.unwrap()].is_some()
-                || self.has_any_value(node)
-        } else {
-            false
+        // Empty prefix always matches
+        if bytes.is_empty() {
+            return !self.is_empty();
         }
-    }
 
-    /// Determines if a node contains any values in its subtree
-    fn has_any_value(&self, node: &TrieNode) -> bool {
-        if let Some(idx) = node.data_idx {
-            if self.data[idx].is_some() {
-                return true;
+        let mut current_id = self.root;
+
+        for &byte in bytes {
+            let current = self.pool.get_node(current_id);
+
+            if !test_bit(&current.is_present, byte) {
+                return false; // Byte not present in current node
+            }
+
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => return false, // Child doesn't exist
             }
         }
 
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-                if idx < node.children.len() && self.has_any_value(&node.children[idx]) {
-                    return true;
+        let current = self.pool.get_node(current_id);
+        if current.data_idx.is_some() {
+            return true;
+        }
+
+        let mut stack = vec![current_id];
+
+        while let Some(node_id) = stack.pop() {
+            let node = self.pool.get_node(node_id);
+
+            if node.data_idx.is_some() {
+                return true;
+            }
+
+            for byte in 0..=255u8 {
+                if test_bit(&node.is_present, byte) {
+                    if let Some(child_id) = self.pool.get_child_idx(node_id, byte) {
+                        stack.push(child_id);
+                    }
                 }
             }
         }
-
         false
     }
 
@@ -1108,15 +984,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(matches.len(), 2);
     /// ```
     pub fn get_prefix_matches<K: AsBytes>(&self, prefix: K) -> Vec<(Vec<u8>, &'_ T)> {
-        let bytes = prefix.as_bytes();
-        let mut result = Vec::new();
-
-        if let Some(node) = self.find_node(bytes) {
-            let mut prefix_vec = bytes.to_vec();
-            self.collect_prefix_matches(node, &mut prefix_vec, &mut result);
-        }
-
-        result
+        self.prefix_iter(prefix).collect()
     }
 
     /// Removes all entries where the key starts with the given prefix.
@@ -1137,17 +1005,9 @@ impl<T> TrieMap<T> {
     /// assert_eq!(map.len(), 1);
     /// ```
     pub fn remove_prefix_matches<K: AsBytes>(&mut self, prefix: K) -> Vec<(Vec<u8>, T)> {
-        let bytes = prefix.as_bytes();
         let mut result = Vec::new();
 
-        let keys_to_remove = if let Some(node) = self.find_node(bytes) {
-            let mut keys = Vec::new();
-            let mut prefix_vec = bytes.to_vec();
-            self.collect_keys_with_prefix(node, &mut prefix_vec, &mut keys);
-            keys
-        } else {
-            return result;
-        };
+        let keys_to_remove: Vec<Vec<u8>> = self.prefix_keys(prefix).collect();
 
         for key in keys_to_remove {
             if let Some(value) = self.remove_internal(&key) {
@@ -1156,46 +1016,6 @@ impl<T> TrieMap<T> {
         }
 
         result
-    }
-
-    fn collect_keys_with_prefix(
-        &self,
-        node: &TrieNode,
-        prefix: &mut Vec<u8>,
-        keys: &mut Vec<Vec<u8>>,
-    ) {
-        if let Some(idx) = node.data_idx {
-            if self.data[idx].is_some() {
-                keys.push(prefix.clone());
-            }
-        }
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-                if idx < node.children.len() {
-                    prefix.push(byte);
-
-                    self.collect_keys_with_prefix(&node.children[idx], prefix, keys);
-
-                    prefix.pop();
-                }
-            }
-        }
-    }
-
-    /// Converts the map into an iterator over key-value pairs.
-    pub fn into_iter(self) -> impl Iterator<Item = (Vec<u8>, T)> {
-        let mut keys_indices = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-        Self::collect_keys_indices(&self.root, &mut current_key, &mut keys_indices);
-        let map: std::collections::HashMap<_, _> =
-            keys_indices.into_iter().map(|(x, y)| (y, x)).collect();
-
-        self.data
-            .into_iter()
-            .enumerate()
-            .filter_map(move |(idx, opt)| opt.map(|value| (map[&idx].clone(), value)))
     }
 
     /// Removes all key-value pairs from the map, returning them as an iterator.
@@ -1212,34 +1032,18 @@ impl<T> TrieMap<T> {
     /// assert_eq!(drained.len(), 2);
     /// assert_eq!(map.len(), 0);
     /// ```
-    pub fn drain(&mut self) -> DrainIter<T> {
-        let mut keys = Vec::with_capacity(self.size);
-        let mut current_key = Vec::new();
-
-        self.collect_keys(&self.root, &mut current_key, &mut keys);
+    pub fn drain(&mut self) -> DrainIter<'_, T> {
+        // Collect all valid keys first
+        let keys = self.keys().map(|x| x.into()).collect();
 
         DrainIter {
-            trie_map: self,
+            data: &mut self.data,
+            free_indices: &mut self.free_indices,
+            size: &mut self.size,
             keys,
             position: 0,
-        }
-    }
-
-    fn collect_keys(&self, node: &TrieNode, current_key: &mut Vec<u8>, keys: &mut Vec<Vec<u8>>) {
-        if let Some(idx) = node.data_idx {
-            if self.data[idx].is_some() {
-                keys.push(current_key.clone());
-            }
-        }
-
-        for byte in 0..=255u8 {
-            if test_bit(&node.is_present, byte) {
-                let idx = popcount(&node.is_present, byte) as usize;
-
-                current_key.push(byte);
-                self.collect_keys(&node.children[idx], current_key, keys);
-                current_key.pop();
-            }
+            pool: &mut self.pool,
+            root: self.root,
         }
     }
 
@@ -1258,15 +1062,7 @@ impl<T> TrieMap<T> {
     /// assert_eq!(keys.len(), 2);
     /// ```
     pub fn keys_starting_with<K: AsBytes>(&self, prefix: K) -> Vec<Vec<u8>> {
-        let bytes = prefix.as_bytes();
-        let mut result = Vec::new();
-
-        if let Some(node) = self.find_node(bytes) {
-            let mut prefix_vec = bytes.to_vec();
-            self.collect_keys_with_prefix(node, &mut prefix_vec, &mut result);
-        }
-
-        result
+        self.prefix_keys(prefix).collect()
     }
 
     /// Gets an entry for a key reference.
@@ -1290,27 +1086,32 @@ impl<T> TrieMap<T> {
     /// ```
     pub fn entry_ref<'a, K: AsBytes + ?Sized>(&'a mut self, key: &'a K) -> Entry<'a, T> {
         let key_bytes = key.as_bytes().to_vec();
-
-        let mut current = &self.root;
-        let mut found = true;
+        let mut current_id = self.root;
 
         for &byte in key.as_bytes() {
+            let current = self.pool.get_node(current_id);
+
             if !test_bit(&current.is_present, byte) {
-                found = false;
-                break;
+                return Entry::Vacant(VacantEntry {
+                    trie: self,
+                    key: key_bytes,
+                });
             }
 
-            let idx = popcount(&current.is_present, byte) as usize;
-            if idx >= current.children.len() {
-                found = false;
-                break;
+            match self.pool.get_child_idx(current_id, byte) {
+                Some(child_id) => current_id = child_id,
+                None => {
+                    return Entry::Vacant(VacantEntry {
+                        trie: self,
+                        key: key_bytes,
+                    });
+                }
             }
-
-            current = &current.children[idx];
         }
 
-        if found && current.data_idx.is_some() {
-            let data_idx = current.data_idx.unwrap();
+        let current = self.pool.get_node(current_id);
+
+        if let Some(data_idx) = current.data_idx {
             if data_idx < self.data.len() && self.data[data_idx].is_some() {
                 return Entry::Occupied(OccupiedEntry {
                     trie: self,
@@ -1320,12 +1121,12 @@ impl<T> TrieMap<T> {
             }
         }
 
+        // No value at this node, return a vacant entry
         Entry::Vacant(VacantEntry {
             trie: self,
             key: key_bytes,
         })
     }
-
     /// Retains only the elements specified by the predicate.
     ///
     /// # Examples
@@ -1351,12 +1152,12 @@ impl<T> TrieMap<T> {
     where
         F: FnMut(&[u8], &mut T) -> bool,
     {
-        let keys: Vec<Vec<u8>> = self.keys().collect();
+        let keys: Vec<Box<[u8]>> = self.keys().collect();
 
         let keys_to_remove = keys
             .iter()
             .filter_map(|k| {
-                if let Some(value) = self.get_mut(k) {
+                if let Some(value) = self.get_mut(&**k) {
                     if !f(k, value) {
                         return Some(k.clone());
                     }
@@ -1366,7 +1167,7 @@ impl<T> TrieMap<T> {
             .collect::<Vec<_>>();
 
         for key in keys_to_remove {
-            self.remove(&key);
+            self.remove(&*key);
         }
     }
 
@@ -1717,15 +1518,8 @@ impl<T> TrieMap<T> {
     {
         let mut new_map = TrieMap::new();
 
-        if let Some(matches) = self.find_node(prefix.as_bytes()) {
-            let mut prefix_vec = prefix.as_bytes().to_vec();
-            let mut pairs = Vec::new();
-
-            self.collect_prefix_matches(matches, &mut prefix_vec, &mut pairs);
-
-            for (key, value) in pairs {
-                new_map.insert(key, value.clone());
-            }
+        for (k, v) in self.prefix_iter(prefix) {
+            new_map.insert(k, v.clone());
         }
 
         new_map

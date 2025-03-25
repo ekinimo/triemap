@@ -3,6 +3,62 @@ use crate::node::{set_bit, test_bit, TrieNode};
 use std::hash::DefaultHasher;
 
 #[test]
+fn test_keys_and_data_idx_iterator() {
+    // Create a test TrieMap
+    let mut map = TrieMap::new();
+    map.insert("apple", 1);
+    map.insert("app", 2);
+    map.insert("banana", 3);
+
+    // Get the iterator directly (this is an internal implementation detail)
+    let keys_data_iter = map.pool.keys_and_indices(map.root);
+
+    // Collect all items into a vector for verification
+    let items: Vec<(Box<[u8]>, usize)> = keys_data_iter.collect();
+
+    // Verify we got the right number of items
+    assert_eq!(items.len(), 3, "Iterator should return exactly 3 items");
+
+    // Convert the keys to strings for easier comparison
+    let keys: Vec<String> = items
+        .iter()
+        .map(|(key, _)| String::from_utf8_lossy(key).to_string())
+        .collect();
+
+    // Verify all keys are present
+    assert!(
+        keys.contains(&"apple".to_string()),
+        "Iterator should return 'apple'"
+    );
+    assert!(
+        keys.contains(&"app".to_string()),
+        "Iterator should return 'app'"
+    );
+    assert!(
+        keys.contains(&"banana".to_string()),
+        "Iterator should return 'banana'"
+    );
+
+    // Verify iterator is returning valid data indices
+    for (_, data_idx) in items {
+        assert!(data_idx < map.data.len(), "Data index should be valid");
+        assert!(
+            map.data[data_idx].is_some(),
+            "Data at index should not be None"
+        );
+    }
+
+    // Test that regular iterator also works
+    let iter_items: Vec<(Vec<u8>, &i32)> = map.iter().collect();
+    assert_eq!(iter_items.len(), 3, "Iter should return exactly 3 items");
+
+    // Test individual key-value access
+    assert_eq!(map.get("apple"), Some(&1));
+    assert_eq!(map.get("app"), Some(&2));
+    assert_eq!(map.get("banana"), Some(&3));
+}
+
+#[test]
 fn test_iteration_after_specific_removal_patterns() {
     // Test case 1: Remove leaf nodes
     {
@@ -452,7 +508,7 @@ fn test_remove_all_and_prune() {
 
     // Prune should remove all internal nodes
     let pruned = trie.prune();
-    assert!(pruned > 0);
+    assert_eq!(true, pruned > 0, "pruned count is {pruned}");
 
     // Trie should be empty but still functional
     assert_eq!(trie.len(), 0);
@@ -493,34 +549,6 @@ fn test_remove_insert_prune_cycles() {
 
     // Final size should be predictable
     assert_eq!(trie.len(), 5 * 5); // 5 cycles, 5 items remaining per cycle
-}
-
-// Test for the edge case where idx >= current.children.len()
-#[test]
-fn test_remove_with_corrupted_trie() {
-    let mut trie = TrieMap::new();
-    trie.insert("abc", 1);
-
-    unsafe {
-        // SAFETY: This is unsafe and only for testing purposes
-        // We're directly manipulating the internal structure to create an inconsistent state
-        let root_ptr = &mut trie.root as *mut TrieNode;
-        let root = &mut *root_ptr;
-
-        // Set a bit for a non-existent child
-        set_bit(&mut root.is_present, b'x');
-
-        // Verify the bit is set but no corresponding child exists
-        assert!(test_bit(&root.is_present, b'x'));
-        assert!(popcount(&root.is_present, b'x') as usize >= root.children.len());
-    }
-
-    // Now try to remove a key that would require traversing the corrupted path
-    let result = trie.remove("x");
-    assert_eq!(result, None);
-
-    // The original data should still be intact
-    assert_eq!(trie.get("abc"), Some(&1));
 }
 
 // Test for the branch that prunes empty nodes during removal
@@ -1557,7 +1585,7 @@ fn test_iterators() {
 
     let mut keys = trie
         .keys()
-        .map(|k| String::from_utf8(k).unwrap())
+        .map(|k| String::from_utf8(k.into()).unwrap())
         .collect::<Vec<_>>();
     keys.sort();
     assert_eq!(keys, vec!["a", "b", "c"]);

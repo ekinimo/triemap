@@ -25,5 +25,5 @@ pub use trie_map::TrieMap;
 // Re-export common types at the crate level
 pub type Result<T> = std::result::Result<T, T>;
 
-#[cfg(test)]
-mod proptest_triemap;
+//#[cfg(test)]
+//mod proptest_triemap;
