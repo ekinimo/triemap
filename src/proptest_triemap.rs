@@ -331,7 +331,7 @@ proptest! {
             // Verify removed keys are not present
             for key in &keys_to_remove {
                 prop_assert_eq!(trie.get(key), None);
-                prop_assert!(!trie.keys().any(|k| String::from_utf8(k).unwrap() == *key));
+                prop_assert!(!trie.keys().any(|k| String::from_utf8(k.into()).unwrap() == *key));
             }
         }
 
@@ -1072,7 +1072,7 @@ fn test_trie_btree_map_equivalence() {
         assert_eq!(trie.len(), btree_map.len());
 
         let trie_keys: Vec<String> = trie.keys()
-            .map(|k| String::from_utf8(k).unwrap())
+            .map(|k| String::from_utf8(k.into()).unwrap())
             .collect();
 
         let btree_keys: Vec<String> = btree_map.keys().cloned().collect();
