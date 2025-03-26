@@ -92,9 +92,6 @@ impl SlicePool {
         current_len: usize,
         remove_pos: usize,
     ) -> TrieNodeIdx {
-        if current_len == 0 {
-            return TrieNodeIdx(usize::MAX); // Nothing to remove from an empty slice
-        }
         let new_idx = self.allocate_slice(current_len - 1);
 
         for i in 0..remove_pos {
@@ -112,23 +109,6 @@ impl SlicePool {
         new_idx
     }
 
-    /// Gets the child node index for a given byte in a trie node
-    #[inline(always)]
-    pub(crate) fn get_child_idx(&self, node_idx: TrieNodeIdx, byte: u8) -> Option<TrieNodeIdx> {
-        let node = self.get_node(node_idx);
-
-        if !test_bit(&node.is_present, byte) {
-            return None;
-        }
-
-        let child_pos = popcount(&node.is_present, byte) as usize;
-        if child_pos < node.child_len() as usize {
-            Some(TrieNodeIdx(node.children.0 + child_pos))
-        } else {
-            None
-        }
-    }
-
     #[inline(always)]
     pub(crate) fn get_child_idx_unchecked(&self, node_idx: TrieNodeIdx, byte: u8) -> TrieNodeIdx {
         let node = self.get_node(node_idx);
@@ -139,9 +119,9 @@ impl SlicePool {
     #[inline(always)]
     pub(crate) fn add_child(&mut self, node_idx: TrieNodeIdx, byte: u8) -> TrieNodeIdx {
         let node = self.get_node(node_idx);
-        if test_bit(&node.is_present, byte) {
-            return self.get_child_idx_unchecked(node_idx, byte);
-        }
+        //if test_bit(&node.is_present, byte) {
+        //    return self.get_child_idx_unchecked(node_idx, byte);
+        //}
 
         let child_count = node.child_len() as usize;
         let insert_pos = popcount(&node.is_present, byte) as usize;
@@ -161,9 +141,9 @@ impl SlicePool {
     pub(crate) fn remove_child(&mut self, node_idx: TrieNodeIdx, byte: u8) -> bool {
         let node = self.get_node(node_idx);
 
-        if !test_bit(&node.is_present, byte) {
-            return false; // Child doesn't exist
-        }
+        //if !test_bit(&node.is_present, byte) {
+        //    return false; // Child doesn't exist
+        //}
 
         let child_count = node.child_len() as usize;
         let remove_pos = popcount(&node.is_present, byte) as usize;
@@ -270,11 +250,10 @@ impl Iterator for KeysAndDataIdx<'_> {
             if let Some(data_idx) = node.data_idx {
                 for byte in (0..=255u8).rev() {
                     if test_bit(&node.is_present, byte) {
-                        if let Some(child_idx) = self.pool.get_child_idx(node_idx, byte) {
-                            let mut child_path = path.clone();
-                            child_path.push(byte);
-                            self.stack.push((child_idx, child_path));
-                        }
+                        let child_idx = self.pool.get_child_idx_unchecked(node_idx, byte);
+                        let mut child_path = path.clone();
+                        child_path.push(byte);
+                        self.stack.push((child_idx, child_path));
                     }
                 }
                 return Some((path.into_boxed_slice(), data_idx));

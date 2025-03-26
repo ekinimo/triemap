@@ -337,13 +337,23 @@ impl<T> TrieMap<T> {
         let mut current_id = self.root;
 
         for &byte in bytes {
-            let current_node = self.pool.get_node(current_id);
-            if !test_bit(&current_node.is_present, byte) {
+            let has_child = {
+                let current_node = self.pool.get_node(current_id);
+                test_bit(&current_node.is_present, byte)
+            };
+
+            if !has_child {
                 current_id = self.pool.add_child(current_id, byte);
             } else {
                 current_id = self.pool.get_child_idx_unchecked(current_id, byte);
             }
         }
+
+        let prev_idx = {
+            let node = self.pool.get_node(current_id);
+            node.data_idx
+        };
+
         let idx = if let Some(free_idx) = self.free_indices.pop() {
             self.data[free_idx] = Some(value);
             free_idx
@@ -352,8 +362,11 @@ impl<T> TrieMap<T> {
             self.data.len() - 1
         };
 
-        let prev_idx = self.pool.get_node(current_id).data_idx;
-        self.pool.get_node_mut(current_id).data_idx = Some(idx);
+        {
+            let node = self.pool.get_node_mut(current_id);
+            node.data_idx = Some(idx);
+        }
+
         if prev_idx.is_none() {
             self.size += 1;
         } else if let Some(prev_idx) = prev_idx {
