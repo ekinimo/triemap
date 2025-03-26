@@ -1,31 +1,342 @@
 use super::*;
+use crate::entry::{Entry, OccupiedEntry, VacantEntry};
+use crate::iter::{DrainIter, Iter, Keys, PrefixIter, PrefixKeys, PrefixValues, Values};
 use crate::node::{clear_bit, popcount, set_bit, test_bit};
+use crate::node::{TrieNode, TrieNodeIdx};
 use std::hash::DefaultHasher;
 
 #[test]
+fn test_entry_or_default_with_occupied() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 42);
+
+    let value = trie.entry("key").or_default();
+    assert_eq!(*value, 42);
+
+    assert_eq!(trie.get("key"), Some(&42));
+}
+
+#[test]
+fn test_entry_or_insert_with_key_occupied() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 42);
+
+    let called = std::cell::Cell::new(false);
+    let value = trie.entry("key").or_insert_with_key(|key| {
+        called.set(true);
+        key.len() as i32
+    });
+
+    assert_eq!(*value, 42);
+    assert!(!called.get());
+}
+
+#[test]
+fn test_vacant_entry_all_methods() {
+    let mut trie = TrieMap::new();
+
+    let entry = trie.entry("key");
+
+    match entry {
+        Entry::Vacant(vacant) => {
+            assert_eq!(vacant.key(), b"key");
+
+            let value = vacant.insert(42);
+            assert_eq!(*value, 42);
+            *value = 100;
+        }
+        Entry::Occupied(_) => panic!("Expected a vacant entry"),
+    }
+
+    assert_eq!(trie.get("key"), Some(&100));
+}
+
+#[test]
+fn test_occupied_entry_all_methods() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 42);
+
+    let entry = trie.entry("key");
+
+    match entry {
+        Entry::Occupied(mut occupied) => {
+            assert_eq!(occupied.get(), &42);
+
+            *occupied.get_mut() = 100;
+            assert_eq!(occupied.get(), &100);
+
+            assert_eq!(occupied.key(), b"key");
+
+            let old_value = occupied.insert(200);
+            assert_eq!(old_value, 100);
+        }
+        Entry::Vacant(_) => panic!("Expected an occupied entry"),
+    }
+
+    assert_eq!(trie.get("key"), Some(&200));
+
+    let entry = trie.entry("key");
+    if let Entry::Occupied(occupied) = entry {
+        let value = occupied.remove();
+        assert_eq!(value, 200);
+    }
+
+    assert!(!trie.contains_key("key"));
+}
+
+#[test]
+fn test_entry_and_modify_with_vacant() {
+    let mut trie: TrieMap<()> = TrieMap::new();
+
+    let called = std::cell::Cell::new(false);
+    let entry = trie.entry("key").and_modify(|_| {
+        called.set(true);
+    });
+
+    assert!(!called.get());
+
+    match entry {
+        Entry::Vacant(_) => {}
+        Entry::Occupied(_) => panic!("Expected a vacant entry"),
+    }
+}
+
+#[test]
+fn test_iter_keys_struct() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+    trie.insert("c", 3);
+
+    let keys_iter = Keys { inner: trie.iter() };
+    let keys: Vec<_> = keys_iter.collect();
+    assert_eq!(keys.len(), 3);
+
+    let keys_iter = Keys { inner: trie.iter() };
+    let hint = keys_iter.size_hint();
+    assert_eq!(hint.0, 0);
+}
+
+#[test]
+fn test_iter_edge_cases() {
+    let mut trie = TrieMap::new();
+
+    let mut empty_iter = trie.iter();
+    assert_eq!(empty_iter.next(), None);
+
+    trie.insert("a", 1);
+    trie.remove("a");
+
+    let key_bytes = "a".as_bytes().to_vec();
+    let mut current_id = trie.root;
+    for &byte in &key_bytes {
+        let has_child = {
+            let current_node = trie.pool.get_node(current_id);
+            test_bit(&current_node.is_present, byte)
+        };
+
+        if !has_child {
+            current_id = trie.pool.add_child(current_id, byte);
+        } else {
+            current_id = trie.pool.get_child_idx_unchecked(current_id, byte);
+        }
+    }
+
+    let node = trie.pool.get_node(current_id);
+    if let Some(data_idx) = node.data_idx {
+        assert!(trie.data.get(data_idx).unwrap().is_none());
+    }
+
+    assert_eq!(trie.iter().count(), 0);
+}
+
+#[test]
+fn test_drain_iter_edge_cases() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+
+    trie.insert("b", 2);
+    trie.remove("b");
+
+    let mut drain = trie.drain();
+
+    assert_eq!(drain.next(), Some(("a".as_bytes().to_vec(), 1)));
+
+    let hint = drain.size_hint();
+    assert!(hint.0 <= 1);
+
+    drop(drain);
+
+    assert_eq!(trie.len(), 0);
+}
+
+#[test]
+fn test_prefix_iter_size_hint() {
+    let mut trie = TrieMap::new();
+    trie.insert("apple", 1);
+    trie.insert("application", 2);
+
+    let prefix_iter = trie.prefix_iter("app");
+    let hint = prefix_iter.size_hint();
+    assert_eq!(hint.0, 0);
+    assert!(hint.1.unwrap() >= 2);
+
+    let prefix_keys = trie.prefix_keys("app");
+    let hint = prefix_keys.size_hint();
+    assert_eq!(hint.0, 0);
+    assert!(hint.1.unwrap() >= 2);
+
+    let prefix_values = trie.prefix_values("app");
+    let hint = prefix_values.size_hint();
+    assert_eq!(hint.0, 0);
+    assert!(hint.1.unwrap() >= 2);
+}
+
+#[test]
+fn test_entry_vacant_then_occupied() {
+    let mut trie = TrieMap::new();
+
+    let key = "test_key";
+    assert!(matches!(trie.entry(key), Entry::Vacant(_)));
+
+    assert_eq!(trie.entry(key).get(), None);
+
+    assert_eq!(trie.entry(key).get_mut(), None);
+
+    trie.insert(key, 42);
+
+    assert!(matches!(trie.entry(key), Entry::Occupied(_)));
+
+    assert_eq!(trie.entry(key).get(), Some(&42));
+
+    if let Entry::Occupied(entry) = trie.entry(key) {
+        assert_eq!(entry.key(), key.as_bytes());
+    }
+}
+
+#[test]
+fn test_node_from_usize() {
+    let idx: TrieNodeIdx = 42.into();
+    assert_eq!(idx.0, 42);
+}
+
+#[test]
+fn test_into_iter_edge_cases() {
+    let mut trie: TrieMap<(())> = TrieMap::new();
+
+    let mut empty_into_iter = trie.into_iter();
+    assert_eq!(empty_into_iter.next(), None);
+
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+
+    trie.insert("c", 3);
+    trie.remove("c");
+
+    let mut into_iter = trie.into_iter();
+    let mut items = Vec::new();
+    while let Some(item) = into_iter.next() {
+        items.push(item);
+    }
+
+    assert_eq!(items.len(), 2);
+    assert!(items.iter().any(|(k, v)| k == b"a" && *v == 1));
+    assert!(items.iter().any(|(k, v)| k == b"b" && *v == 2));
+}
+
+#[test]
+fn test_drain_iter_with_none_value() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+
+    trie.remove("b");
+
+    let drained: Vec<_> = trie.drain().collect();
+    assert_eq!(drained.len(), 1);
+    assert_eq!(drained[0].0, b"a");
+    assert_eq!(drained[0].1, 1);
+}
+
+#[test]
+fn test_occupied_entry_with_edge_cases() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 10);
+
+    let entry = trie.entry("key");
+    if let Entry::Occupied(occupied) = entry {
+        assert_eq!(occupied.key(), b"key");
+    } else {
+        panic!("Expected Occupied entry");
+    }
+}
+
+#[test]
+fn test_entry_key_mutated() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 10);
+
+    let key = String::from("key");
+    let entry = trie.entry_ref(&key);
+    match entry {
+        Entry::Occupied(occupied) => {
+            assert_eq!(occupied.key(), key.as_bytes());
+        }
+        Entry::Vacant(_) => panic!("Expected Occupied entry"),
+    }
+
+    let nonexistent = "nonexistent";
+    let entry = trie.entry_ref(nonexistent);
+    match entry {
+        Entry::Vacant(vacant) => {
+            assert_eq!(vacant.key(), nonexistent.as_bytes());
+        }
+        Entry::Occupied(_) => panic!("Expected Vacant entry"),
+    }
+}
+
+#[test]
+fn test_values_with_none_values() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+
+    trie.remove("b");
+
+    let values: Vec<_> = trie.values().collect();
+    assert_eq!(values.len(), 1);
+    assert_eq!(*values[0], 1);
+}
+
+#[test]
+fn test_values_size_hint() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+
+    let values = trie.values();
+    let hint = values.size_hint();
+    assert!(hint.0 <= hint.1.unwrap_or(usize::MAX));
+}
+#[test]
 fn test_keys_and_data_idx_iterator() {
-    // Create a test TrieMap
     let mut map = TrieMap::new();
     map.insert("apple", 1);
     map.insert("app", 2);
     map.insert("banana", 3);
 
-    // Get the iterator directly (this is an internal implementation detail)
     let keys_data_iter = map.pool.keys_and_indices(map.root);
 
-    // Collect all items into a vector for verification
     let items: Vec<(Box<[u8]>, usize)> = keys_data_iter.collect();
 
-    // Verify we got the right number of items
     assert_eq!(items.len(), 3, "Iterator should return exactly 3 items");
 
-    // Convert the keys to strings for easier comparison
     let keys: Vec<String> = items
         .iter()
         .map(|(key, _)| String::from_utf8_lossy(key).to_string())
         .collect();
 
-    // Verify all keys are present
     assert!(
         keys.contains(&"apple".to_string()),
         "Iterator should return 'apple'"
@@ -39,7 +350,6 @@ fn test_keys_and_data_idx_iterator() {
         "Iterator should return 'banana'"
     );
 
-    // Verify iterator is returning valid data indices
     for (_, data_idx) in items {
         assert!(data_idx < map.data.len(), "Data index should be valid");
         assert!(
@@ -48,11 +358,9 @@ fn test_keys_and_data_idx_iterator() {
         );
     }
 
-    // Test that regular iterator also works
     let iter_items: Vec<(Vec<u8>, &i32)> = map.iter().collect();
     assert_eq!(iter_items.len(), 3, "Iter should return exactly 3 items");
 
-    // Test individual key-value access
     assert_eq!(map.get("apple"), Some(&1));
     assert_eq!(map.get("app"), Some(&2));
     assert_eq!(map.get("banana"), Some(&3));
@@ -60,17 +368,14 @@ fn test_keys_and_data_idx_iterator() {
 
 #[test]
 fn test_iteration_after_specific_removal_patterns() {
-    // Test case 1: Remove leaf nodes
     {
         let mut trie = TrieMap::new();
         trie.insert("apple", 1);
         trie.insert("application", 2);
         trie.insert("banana", 3);
 
-        // Remove a leaf node
         trie.remove("application");
 
-        // Check iteration
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -82,17 +387,14 @@ fn test_iteration_after_specific_removal_patterns() {
         assert!(!pairs.contains(&("application".to_string(), 2)));
     }
 
-    // Test case 2: Remove parent nodes
     {
         let mut trie = TrieMap::new();
         trie.insert("a", 1);
         trie.insert("ab", 2);
         trie.insert("abc", 3);
 
-        // Remove a parent node (middle of path)
         trie.remove("ab");
 
-        // Check iteration includes both remaining nodes
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -104,15 +406,12 @@ fn test_iteration_after_specific_removal_patterns() {
         assert!(!pairs.contains(&("ab".to_string(), 2)));
     }
 
-    // Test case 3: Empty trie after removal
     {
         let mut trie = TrieMap::new();
         trie.insert("a", 1);
 
-        // Remove the only element
         trie.remove("a");
 
-        // Check iteration on empty trie
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -121,17 +420,14 @@ fn test_iteration_after_specific_removal_patterns() {
         assert_eq!(pairs.len(), 0);
     }
 
-    // Test case 4: Remove and reinsert
     {
         let mut trie = TrieMap::new();
         trie.insert("a", 1);
         trie.insert("b", 2);
 
-        // Remove and reinsert with different value
         trie.remove("a");
         trie.insert("a", 10);
 
-        // Check iteration has updated value
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -142,7 +438,6 @@ fn test_iteration_after_specific_removal_patterns() {
         assert!(pairs.contains(&("b".to_string(), 2)));
     }
 
-    // Test case 5: Shared prefix removals
     {
         let mut trie = TrieMap::new();
         trie.insert("test", 1);
@@ -150,11 +445,9 @@ fn test_iteration_after_specific_removal_patterns() {
         trie.insert("tested", 3);
         trie.insert("tester", 4);
 
-        // Remove two with shared prefix
         trie.remove("testing");
         trie.remove("tested");
 
-        // Check remaining items
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -165,18 +458,15 @@ fn test_iteration_after_specific_removal_patterns() {
         assert!(pairs.contains(&("tester".to_string(), 4)));
     }
 
-    // Test case 6: Remove all entries with same prefix
     {
         let mut trie = TrieMap::new();
         trie.insert("foo1", 1);
         trie.insert("foo2", 2);
         trie.insert("bar", 3);
 
-        // Remove all foo entries
         trie.remove("foo1");
         trie.remove("foo2");
 
-        // Iteration should only include bar
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -186,7 +476,6 @@ fn test_iteration_after_specific_removal_patterns() {
         assert_eq!(pairs[0], ("bar".to_string(), 3));
     }
 
-    // Test case 7: Interleaved insert and remove operations
     {
         let mut trie = TrieMap::new();
 
@@ -197,7 +486,6 @@ fn test_iteration_after_specific_removal_patterns() {
         trie.remove("b");
         trie.insert("d", 4);
 
-        // Check final iteration state
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -208,17 +496,14 @@ fn test_iteration_after_specific_removal_patterns() {
         assert!(pairs.contains(&("d".to_string(), 4)));
     }
 
-    // Test case 8: Remove nodes with special characters
     {
         let mut trie = TrieMap::new();
         trie.insert("normal", 1);
         trie.insert("special!@#", 2);
         trie.insert("numbers123", 3);
 
-        // Remove the special character key
         trie.remove("special!@#");
 
-        // Check iteration
         let pairs: Vec<(String, i32)> = trie
             .iter()
             .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -237,24 +522,19 @@ fn test_improved_remove() {
     trie.insert("abcd", 2);
     trie.insert("abce", 3);
 
-    // Remove a value
     assert_eq!(trie.remove("abcd"), Some(2));
     assert_eq!(trie.len(), 2);
 
-    // The value should be gone
     assert_eq!(trie.get("abcd"), None);
 
-    // But other values should remain
     assert_eq!(trie.get("abc"), Some(&1));
     assert_eq!(trie.get("abce"), Some(&3));
 
-    // Reinserting the value should reuse the existing structure
     trie.insert("abcd", 4);
     assert_eq!(trie.get("abcd"), Some(&4));
     assert_eq!(trie.len(), 3);
 }
 
-// Test the basic functionality of the prune method
 #[test]
 fn test_basic_prune() {
     let mut trie = TrieMap::new();
@@ -262,90 +542,66 @@ fn test_basic_prune() {
     trie.insert("abcd", 2);
     trie.insert("abce", 3);
 
-    // Remove leaves first
     assert_eq!(trie.remove("abcd"), Some(2));
     assert_eq!(trie.remove("abce"), Some(3));
 
-    // Structure should still be there before pruning
     trie.insert("abcd", 4);
     assert_eq!(trie.get("abcd"), Some(&4));
 
-    // Remove again
     assert_eq!(trie.remove("abcd"), Some(4));
 
-    // Now prune
     let pruned = trie.prune();
-    assert!(pruned > 0); // Should have pruned some nodes
+    assert!(pruned > 0);
 
-    // The inner structure should be gone now
-    // To test this, we need to reinsert and verify that new nodes are created
     trie.insert("abcd", 5);
     assert_eq!(trie.get("abcd"), Some(&5));
 }
 
-// Test pruning on an empty trie
 #[test]
 fn test_prune_empty_trie() {
     let mut trie: TrieMap<i32> = TrieMap::new();
 
-    // Pruning an empty trie should be safe and return 0
     let pruned = trie.prune();
     assert_eq!(pruned, 0);
 }
 
-// Test pruning with a mix of used and unused paths
 #[test]
 fn test_prune_mixed_paths() {
     let mut trie = TrieMap::new();
 
-    // Create a deep path with branches
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
     trie.insert("abcd", 4);
     trie.insert("abcde", 5);
 
-    // Add some alternate branches
     trie.insert("abx", 6);
     trie.insert("aby", 7);
 
-    // Remove some but not all leaves
     assert_eq!(trie.remove("abcde"), Some(5));
     assert_eq!(trie.remove("abcd"), Some(4));
     assert_eq!(trie.remove("abx"), Some(6));
 
-    // Should still have
-    // - "a" = 1
-    // - "ab" = 2
-    // - "abc" = 3
-    // - "aby" = 7
-
-    // Prune and check that we've removed some nodes
     let pruned = trie.prune();
     assert!(pruned > 0);
 
-    // Existing values should still be accessible
     assert_eq!(trie.get("a"), Some(&1));
     assert_eq!(trie.get("ab"), Some(&2));
     assert_eq!(trie.get("abc"), Some(&3));
     assert_eq!(trie.get("aby"), Some(&7));
 
-    // Removed values should still be gone
     assert_eq!(trie.get("abcde"), None);
     assert_eq!(trie.get("abcd"), None);
     assert_eq!(trie.get("abx"), None);
 
-    // Recreating paths should work
     trie.insert("abx", 8);
     assert_eq!(trie.get("abx"), Some(&8));
 }
 
-// Test pruning in a complex branching structure
 #[test]
 fn test_complex_branching_prune() {
     let mut trie = TrieMap::new();
 
-    // Create a structure with multiple branches
     for i in 0..10 {
         for j in 0..10 {
             let key = format!("branch{}leaf{}", i, j);
@@ -353,72 +609,57 @@ fn test_complex_branching_prune() {
         }
     }
 
-    // Remove specific subtrees
     for j in 0..10 {
         let key = format!("branch5leaf{}", j);
         trie.remove(&key);
     }
 
-    // Count nodes before and after pruning
     let current_size = trie.len();
     let pruned = trie.prune();
     assert!(pruned > 0);
 
-    // Size should remain the same because we're only pruning structure nodes, not value nodes
     assert_eq!(trie.len(), current_size);
 
-    // Make sure we can still access values from other branches
     assert_eq!(trie.get("branch1leaf1"), Some(&101));
     assert_eq!(trie.get("branch9leaf9"), Some(&909));
 
-    // And the removed branch should stay removed
     assert_eq!(trie.get("branch5leaf5"), None);
 }
 
-// Test pruning efficiency: it should only prune what's necessary
 #[test]
 fn test_prune_efficiency() {
     let mut trie = TrieMap::new();
 
-    // Create paths with shared prefixes
     trie.insert("abc", 1);
     trie.insert("abcd", 2);
     trie.insert("abce", 3);
 
-    // Remove only one leaf
     trie.remove("abcd");
 
-    // First prune should remove some nodes
     let first_prune = trie.prune();
     assert!(first_prune > 0);
 
-    // Second prune should not remove anything more
     let second_prune = trie.prune();
     assert_eq!(second_prune, 0);
 
-    // Remaining values should be intact
     assert_eq!(trie.get("abc"), Some(&1));
     assert_eq!(trie.get("abce"), Some(&3));
 }
 
-// Test pruning a large number of paths
 #[test]
 fn test_prune_large_dataset() {
     let mut trie = TrieMap::new();
 
-    // Insert 1000 items
     for i in 0..1000 {
         let key = format!("key{}", i);
         trie.insert(key, i);
     }
 
-    // Remove half of them
     for i in 0..500 {
         let key = format!("key{}", i);
         trie.remove(&key);
     }
 
-    // Prune should work efficiently
     let start = std::time::Instant::now();
     let pruned = trie.prune();
     let duration = start.elapsed();
@@ -426,78 +667,62 @@ fn test_prune_large_dataset() {
     assert!(pruned > 0);
     println!("Pruned {} nodes in {:?}", pruned, duration);
 
-    // Should still have the remaining items
     for i in 500..1000 {
         let key = format!("key{}", i);
         assert_eq!(trie.get(&key), Some(&i));
     }
 }
 
-// Test pruning when removing non-leaf nodes
 #[test]
 fn test_prune_with_non_leaf_removals() {
     let mut trie = TrieMap::new();
 
-    // Create a path where internal nodes also have values
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
     trie.insert("abcd", 4);
 
-    // Remove an internal node
     trie.remove("ab");
 
-    // Prune should not remove anything because all paths are still used
     let pruned = trie.prune();
     assert_eq!(pruned, 0);
 
-    // Values should remain accessible
     assert_eq!(trie.get("a"), Some(&1));
     assert_eq!(trie.get("abc"), Some(&3));
     assert_eq!(trie.get("abcd"), Some(&4));
 
-    // Now remove all the deeper nodes
     trie.remove("abc");
     trie.remove("abcd");
 
-    // Prune should now remove those nodes
     let pruned = trie.prune();
     assert!(pruned > 0);
 
-    // Only root node value should remain
     assert_eq!(trie.get("a"), Some(&1));
 }
 
-// Test that pruning and our improvements don't break the Entry API
 #[test]
 fn test_entry_api_with_pruning() {
     let mut trie = TrieMap::new();
 
-    // Set up some initial data
     trie.insert("key1", 1);
     trie.insert("key2", 2);
 
-    // Remove and prune
     trie.remove("key2");
     trie.prune();
 
-    // Entry API should still work
     trie.entry("key1").and_modify(|v| *v += 10);
     trie.entry("key2").or_insert(20);
     trie.entry("key3").or_insert_with(|| 30);
 
-    // Check values
     assert_eq!(trie.get("key1"), Some(&11));
     assert_eq!(trie.get("key2"), Some(&20));
     assert_eq!(trie.get("key3"), Some(&30));
 }
 
-// Test that removing all nodes and pruning leaves an empty but functional trie
 #[test]
 fn test_remove_all_and_prune() {
     let mut trie = TrieMap::new();
 
-    // Insert and then remove everything
     trie.insert("a", 1);
     trie.insert("b", 2);
     trie.insert("c", 3);
@@ -506,125 +731,97 @@ fn test_remove_all_and_prune() {
     trie.remove("b");
     trie.remove("c");
 
-    // Prune should remove all internal nodes
     let pruned = trie.prune();
     assert!(pruned > 0, "pruned count is {pruned}");
 
-    // Trie should be empty but still functional
     assert_eq!(trie.len(), 0);
     assert!(trie.is_empty());
 
-    // Should be able to insert new items
     trie.insert("new", 42);
     assert_eq!(trie.get("new"), Some(&42));
 }
 
-// Test repeated remove/insert/prune cycles
 #[test]
 fn test_remove_insert_prune_cycles() {
     let mut trie = TrieMap::new();
 
     for cycle in 0..5 {
-        // Insert items
         for i in 0..10 {
             let key = format!("cycle{}item{}", cycle, i);
             trie.insert(&key, i);
         }
 
-        // Remove half
         for i in 0..5 {
             let key = format!("cycle{}item{}", cycle, i);
             trie.remove(&key);
         }
 
-        // Prune
         trie.prune();
 
-        // Check remaining items
         for i in 5..10 {
             let key = format!("cycle{}item{}", cycle, i);
             assert_eq!(trie.get(&key), Some(&i));
         }
     }
 
-    // Final size should be predictable
-    assert_eq!(trie.len(), 5 * 5); // 5 cycles, 5 items remaining per cycle
+    assert_eq!(trie.len(), 5 * 5);
 }
 
-// Test for the branch that prunes empty nodes during removal
 #[test]
 fn test_remove_with_node_pruning() {
     let mut trie = TrieMap::new();
 
-    // Insert keys that share a prefix but have distinct endings
     trie.insert("abc", 1);
     trie.insert("abd", 2);
     trie.insert("abcde", 3);
 
-    // Remove a leaf node
     assert_eq!(trie.remove("abcde"), Some(3));
 
-    // The shared prefix nodes should still exist
     assert_eq!(trie.get("abc"), Some(&1));
     assert_eq!(trie.get("abd"), Some(&2));
 
-    // Structure should be optimized - internal nodes without values and without other children
-    // should have been removed. Let's verify this by checking that the structure is still navigable.
     assert_eq!(trie.get("abc"), Some(&1));
 
-    // Now remove "abc" - this should trigger pruning of empty nodes
     assert_eq!(trie.remove("abc"), Some(1));
 
-    // "abd" should still be accessible
     assert_eq!(trie.get("abd"), Some(&2));
 
-    // Let's test a more complex case
     let mut trie = TrieMap::new();
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
     trie.insert("abcd", 4);
 
-    // Remove "abcd" - should remove the deepest leaf node
     assert_eq!(trie.remove("abcd"), Some(4));
     assert_eq!(trie.get("abc"), Some(&3));
 
-    // Remove "abc" - should remove the node but keep "ab"
     assert_eq!(trie.remove("abc"), Some(3));
     assert_eq!(trie.get("ab"), Some(&2));
 
-    // Remove "ab" - should remove the node but keep "a"
     assert_eq!(trie.remove("ab"), Some(2));
     assert_eq!(trie.get("a"), Some(&1));
 
-    // Remove "a" - should empty the trie
     assert_eq!(trie.remove("a"), Some(1));
     assert_eq!(trie.len(), 0);
 }
 
-// Test for the recursive pruning behavior
 #[test]
 fn test_cascading_node_pruning() {
     let mut trie = TrieMap::new();
 
-    // Create a deep, linear path
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
     trie.insert("abcd", 4);
     trie.insert("abcde", 5);
 
-    // Remove the deepest leaf
     assert_eq!(trie.remove("abcde"), Some(5));
 
-    // All other nodes should still be there
     assert_eq!(trie.get("abcd"), Some(&4));
     assert_eq!(trie.get("abc"), Some(&3));
     assert_eq!(trie.get("ab"), Some(&2));
     assert_eq!(trie.get("a"), Some(&1));
 
-    // Now remove the values in reverse order, one by one
-    // This should test the recursive node pruning
     assert_eq!(trie.remove("abcd"), Some(4));
     assert_eq!(trie.get("abc"), Some(&3));
 
@@ -637,13 +834,11 @@ fn test_cascading_node_pruning() {
     assert_eq!(trie.remove("a"), Some(1));
     assert_eq!(trie.len(), 0);
 
-    // Test with branching structure
     let mut trie = TrieMap::new();
     trie.insert("abc", 1);
     trie.insert("abd", 2);
     trie.insert("abe", 3);
 
-    // Remove nodes in a way that tests the delete_child flag propagation
     assert_eq!(trie.remove("abe"), Some(3));
     assert_eq!(trie.len(), 2);
 
@@ -654,12 +849,10 @@ fn test_cascading_node_pruning() {
     assert_eq!(trie.len(), 0);
 }
 
-// Test for complex pruning with branches
 #[test]
 fn test_complex_pruning_with_branches() {
     let mut trie = TrieMap::new();
 
-    // Create a structure with multiple branches
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
@@ -668,41 +861,30 @@ fn test_complex_pruning_with_branches() {
     trie.insert("ac", 6);
     trie.insert("acd", 7);
 
-    // Remove a leaf node
     assert_eq!(trie.remove("abd"), Some(4));
 
-    // The branch should be preserved because other nodes exist
     assert_eq!(trie.get("abc"), Some(&3));
     assert_eq!(trie.get("abx"), Some(&5));
 
-    // Remove another node on the same branch
     assert_eq!(trie.remove("abc"), Some(3));
 
-    // "abx" should still be accessible
     assert_eq!(trie.get("abx"), Some(&5));
 
-    // Remove the last node on this branch
     assert_eq!(trie.remove("abx"), Some(5));
 
-    // "ab" should still be accessible
     assert_eq!(trie.get("ab"), Some(&2));
 
-    // Other branch should be untouched
     assert_eq!(trie.get("ac"), Some(&6));
     assert_eq!(trie.get("acd"), Some(&7));
 
-    // Remove internal node "ab"
     assert_eq!(trie.remove("ab"), Some(2));
 
-    // Other branch still intact
     assert_eq!(trie.get("ac"), Some(&6));
     assert_eq!(trie.get("acd"), Some(&7));
 
-    // Remove from other branch
     assert_eq!(trie.remove("acd"), Some(7));
     assert_eq!(trie.get("ac"), Some(&6));
 
-    // Remove remaining nodes
     assert_eq!(trie.remove("ac"), Some(6));
     assert_eq!(trie.get("a"), Some(&1));
 
@@ -718,21 +900,17 @@ fn test_union() {
     trie1.insert("c", 3);
 
     let mut trie2 = TrieMap::new();
-    trie2.insert("c", 30); // Different value for same key
+    trie2.insert("c", 30);
     trie2.insert("d", 4);
     trie2.insert("e", 5);
 
-    // Collect union results
     let union_results: Vec<(Vec<u8>, &i32)> = trie1.union(&trie2).collect();
 
-    // Sort for consistent comparison
     let mut sorted_results = union_results.clone();
     sorted_results.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
-    // Check correct number of entries
     assert_eq!(sorted_results.len(), 5);
 
-    // Check each key-value pair
     let result_map: HashMap<String, i32> = sorted_results
         .into_iter()
         .map(|(k, &v)| (String::from_utf8(k).unwrap(), v))
@@ -740,47 +918,40 @@ fn test_union() {
 
     assert_eq!(result_map.get("a"), Some(&1));
     assert_eq!(result_map.get("b"), Some(&2));
-    assert_eq!(result_map.get("c"), Some(&3)); // Should use value from trie1
+    assert_eq!(result_map.get("c"), Some(&3));
     assert_eq!(result_map.get("d"), Some(&4));
     assert_eq!(result_map.get("e"), Some(&5));
 
-    // Original tries should remain unchanged
     assert_eq!(trie1.len(), 3);
     assert_eq!(trie2.len(), 3);
 }
 
 #[test]
 fn test_union_empty_maps() {
-    // Union with empty maps
     let mut trie1 = TrieMap::new();
     trie1.insert("a", 1);
 
     let empty_trie: TrieMap<i32> = TrieMap::new();
 
-    // Union with empty second map
     let union1: Vec<_> = trie1.union(&empty_trie).collect();
     assert_eq!(union1.len(), 1);
     assert_eq!(String::from_utf8(union1[0].0.clone()).unwrap(), "a");
     assert_eq!(*union1[0].1, 1);
 
-    // Union with empty first map
     let union2: Vec<_> = empty_trie.union(&trie1).collect();
     assert_eq!(union2.len(), 1);
     assert_eq!(String::from_utf8(union2[0].0.clone()).unwrap(), "a");
     assert_eq!(*union2[0].1, 1);
 
-    // Union of two empty maps
     let empty_trie2: TrieMap<i32> = TrieMap::new();
     let union3: Vec<_> = empty_trie.union(&empty_trie2).collect();
     assert_eq!(union3.len(), 0);
 }
 
-// Tests for Entry API with empty entries
 #[test]
 fn test_entry_empty_key() {
     let mut trie = TrieMap::new();
 
-    // Test with empty string key
     let empty_str = "";
     {
         let entry = trie.entry(empty_str);
@@ -790,7 +961,6 @@ fn test_entry_empty_key() {
     assert_eq!(trie.get(empty_str), Some(&42));
     assert_eq!(trie.len(), 1);
 
-    // Test with empty byte slice
     let empty_bytes: &[u8] = &[];
     {
         let entry = trie.entry(empty_bytes);
@@ -805,7 +975,6 @@ fn test_entry_empty_key() {
 
     assert_eq!(trie.get(empty_bytes), Some(&100));
 
-    // Update empty key
     {
         let entry = trie.entry(empty_str);
         match entry {
@@ -825,7 +994,6 @@ fn test_entry_empty_key() {
 fn test_entry_vacant_methods() {
     let mut trie = TrieMap::new();
 
-    // Test VacantEntry methods
     {
         let entry = trie.entry("test_key");
         match entry {
@@ -840,21 +1008,19 @@ fn test_entry_vacant_methods() {
 
     assert_eq!(trie.get("test_key"), Some(&42));
 
-    // Test Entry::or_default
     {
         let key = "default_key";
         let value_ref = trie.entry(key).or_default();
-        assert_eq!(*value_ref, 0); // Default value for i32
+        assert_eq!(*value_ref, 0);
         *value_ref = 100;
     }
 
     assert_eq!(trie.get("default_key"), Some(&100));
 
-    // Test Entry::or_insert_with_key
     {
         let key = "key_length";
         let value_ref = trie.entry(key).or_insert_with_key(|key| key.len() as i32);
-        assert_eq!(*value_ref, 10); // Length of "key_length"
+        assert_eq!(*value_ref, 10);
     }
 
     assert_eq!(trie.get("key_length"), Some(&10));
@@ -865,7 +1031,6 @@ fn test_occupied_entry_methods() {
     let mut trie = TrieMap::new();
     trie.insert("key1", 10);
 
-    // Test OccupiedEntry::get and get_mut
     {
         let entry = trie.entry("key1");
         match entry {
@@ -882,7 +1047,6 @@ fn test_occupied_entry_methods() {
 
     assert_eq!(trie.get("key1"), Some(&20));
 
-    // Test OccupiedEntry::into_mut
     {
         let entry = trie.entry("key1");
         match entry {
@@ -897,7 +1061,6 @@ fn test_occupied_entry_methods() {
 
     assert_eq!(trie.get("key1"), Some(&30));
 
-    // Test Entry::and_modify
     {
         let entry = trie.entry("key1");
         let modified_entry = entry.and_modify(|v| *v *= 2);
@@ -912,7 +1075,6 @@ fn test_occupied_entry_methods() {
 
     assert_eq!(trie.get("key1"), Some(&60));
 
-    // Test OccupiedEntry::insert
     {
         let entry = trie.entry("key1");
         match entry {
@@ -927,7 +1089,6 @@ fn test_occupied_entry_methods() {
 
     assert_eq!(trie.get("key1"), Some(&100));
 
-    // Test OccupiedEntry::remove
     {
         let entry = trie.entry("key1");
         match entry {
@@ -946,7 +1107,6 @@ fn test_occupied_entry_methods() {
 fn test_vacant_entry_on_empty_trie() {
     let mut empty_trie: TrieMap<i32> = TrieMap::new();
 
-    // Check that entries in an empty trie are vacant
     match empty_trie.entry("key") {
         Entry::Vacant(vacant) => {
             assert_eq!(vacant.key(), b"key");
@@ -959,7 +1119,6 @@ fn test_vacant_entry_on_empty_trie() {
     assert_eq!(empty_trie.len(), 1);
     assert_eq!(empty_trie.get("key"), Some(&42));
 
-    // Test entry API chaining on an empty trie
     let mut new_empty_trie: TrieMap<String> = TrieMap::new();
 
     let value = new_empty_trie
@@ -968,17 +1127,15 @@ fn test_vacant_entry_on_empty_trie() {
 
     assert_eq!(value, "initial");
 
-    // Test or_default on empty trie
     let mut default_trie: TrieMap<Vec<i32>> = TrieMap::new();
     let vec_ref = default_trie.entry("default").or_default();
-    assert!(vec_ref.is_empty()); // Default for Vec<i32> is an empty vec
+    assert!(vec_ref.is_empty());
 
     vec_ref.push(1);
     vec_ref.push(2);
 
     assert_eq!(default_trie.get("default"), Some(&vec![1, 2]));
 
-    // Test multiple entry operations on same empty trie
     let mut multi_entry_trie: TrieMap<i32> = TrieMap::new();
 
     multi_entry_trie.entry("a").or_insert(1);
@@ -987,7 +1144,6 @@ fn test_vacant_entry_on_empty_trie() {
 
     assert_eq!(multi_entry_trie.len(), 3);
 
-    // Test entry_ref on empty trie
     let mut ref_trie: TrieMap<i32> = TrieMap::new();
     let key = String::from("ref_key");
 
@@ -1002,7 +1158,6 @@ fn test_vacant_entry_on_empty_trie() {
     assert_eq!(ref_trie.get(&key), Some(&100));
 }
 
-// Tests for set operations (intersection, difference, symmetric_difference)
 #[test]
 fn test_intersection() {
     let mut trie1 = TrieMap::new();
@@ -1011,40 +1166,35 @@ fn test_intersection() {
     trie1.insert("c", 3);
 
     let mut trie2 = TrieMap::new();
-    trie2.insert("b", 20); // Different value
-    trie2.insert("c", 30); // Different value
+    trie2.insert("b", 20);
+    trie2.insert("c", 30);
     trie2.insert("d", 40);
 
-    // Test intersection - should contain keys present in both tries with values from trie1
     let intersection: Vec<_> = trie1.intersect(&trie2).collect();
 
     assert_eq!(intersection.len(), 2);
 
-    // Sort for consistent comparison
     let mut sorted_intersection = intersection.clone();
     sorted_intersection.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
-    // Check keys and values
     assert_eq!(
         String::from_utf8(sorted_intersection[0].0.clone()).unwrap(),
         "b"
     );
-    assert_eq!(*sorted_intersection[0].1, 2); // Value from trie1
+    assert_eq!(*sorted_intersection[0].1, 2);
 
     assert_eq!(
         String::from_utf8(sorted_intersection[1].0.clone()).unwrap(),
         "c"
     );
-    assert_eq!(*sorted_intersection[1].1, 3); // Value from trie1
+    assert_eq!(*sorted_intersection[1].1, 3);
 
-    // Empty intersection
     let empty_trie: TrieMap<i32> = TrieMap::new();
     let empty_intersection: Vec<_> = trie1.intersect(&empty_trie).collect();
     assert_eq!(empty_intersection.len(), 0);
 
-    // Intersection with self
     let self_intersection: Vec<_> = trie1.intersect(&trie1).collect();
-    assert_eq!(self_intersection.len(), 3); // Should contain all keys
+    assert_eq!(self_intersection.len(), 3);
 }
 
 #[test]
@@ -1059,14 +1209,12 @@ fn test_difference() {
     trie2.insert("c", 30);
     trie2.insert("d", 40);
 
-    // Test difference - should contain keys in trie1 that aren't in trie2
     let difference: Vec<_> = trie1.difference(&trie2).collect();
 
     assert_eq!(difference.len(), 1);
     assert_eq!(String::from_utf8(difference[0].0.clone()).unwrap(), "a");
     assert_eq!(*difference[0].1, 1);
 
-    // Test difference in the other direction
     let reverse_difference: Vec<_> = trie2.difference(&trie1).collect();
 
     assert_eq!(reverse_difference.len(), 1);
@@ -1076,14 +1224,12 @@ fn test_difference() {
     );
     assert_eq!(*reverse_difference[0].1, 40);
 
-    // Difference with empty map
     let empty_trie: TrieMap<i32> = TrieMap::new();
     let diff_with_empty: Vec<_> = trie1.difference(&empty_trie).collect();
-    assert_eq!(diff_with_empty.len(), 3); // Should contain all keys from trie1
+    assert_eq!(diff_with_empty.len(), 3);
 
-    // Difference with self
     let self_diff: Vec<_> = trie1.difference(&trie1).collect();
-    assert_eq!(self_diff.len(), 0); // Should be empty
+    assert_eq!(self_diff.len(), 0);
 }
 
 #[test]
@@ -1098,16 +1244,13 @@ fn test_symmetric_difference() {
     trie2.insert("c", 30);
     trie2.insert("d", 40);
 
-    // Test symmetric difference - should contain keys that are in either trie but not both
     let sym_diff: Vec<_> = trie1.symmetric_difference(&trie2).collect();
 
     assert_eq!(sym_diff.len(), 2);
 
-    // Sort for consistent comparison
     let mut sorted_sym_diff = sym_diff.clone();
     sorted_sym_diff.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
-    // Check keys and values
     assert_eq!(
         String::from_utf8(sorted_sym_diff[0].0.clone()).unwrap(),
         "a"
@@ -1120,17 +1263,14 @@ fn test_symmetric_difference() {
     );
     assert_eq!(*sorted_sym_diff[1].1, 40);
 
-    // Symmetric difference with empty map
     let empty_trie: TrieMap<i32> = TrieMap::new();
     let sym_diff_with_empty: Vec<_> = trie1.symmetric_difference(&empty_trie).collect();
-    assert_eq!(sym_diff_with_empty.len(), 3); // Should contain all keys from trie1
+    assert_eq!(sym_diff_with_empty.len(), 3);
 
-    // Symmetric difference with self
     let self_sym_diff: Vec<_> = trie1.symmetric_difference(&trie1).collect();
-    assert_eq!(self_sym_diff.len(), 0); // Should be empty
+    assert_eq!(self_sym_diff.len(), 0);
 }
 
-// Tests for chained set operations
 #[test]
 fn test_chained_set_operations() {
     let mut trie1 = TrieMap::new();
@@ -1145,8 +1285,6 @@ fn test_chained_set_operations() {
     trie3.insert("c", 300);
     trie3.insert("d", 400);
 
-    // Chain union and intersection
-    // Union of trie1 and trie2, then intersect with trie3
     let union_then_intersect: Vec<_> = trie1
         .union(&trie2)
         .filter(|(key, _)| trie3.contains_key(key))
@@ -1157,9 +1295,8 @@ fn test_chained_set_operations() {
         String::from_utf8(union_then_intersect[0].0.clone()).unwrap(),
         "c"
     );
-    assert_eq!(*union_then_intersect[0].1, 30); // Value from trie2
+    assert_eq!(*union_then_intersect[0].1, 30);
 
-    // Chain difference and collect
     let key_difference: Vec<String> = trie1
         .difference(&trie2)
         .map(|(key, _)| String::from_utf8(key).unwrap())
@@ -1167,12 +1304,10 @@ fn test_chained_set_operations() {
 
     assert_eq!(key_difference, vec!["a".to_string()]);
 
-    // Chain for complex set operation (elements in trie1 not in trie2, plus elements in trie3)
     let complex_operation: Vec<_> = trie1.difference(&trie2).chain(trie3.iter()).collect();
 
-    assert_eq!(complex_operation.len(), 3); // "a" from difference + "c" and "d" from trie3
+    assert_eq!(complex_operation.len(), 3);
 
-    // Sort for consistent checking
     let mut sorted_complex = complex_operation.clone();
     sorted_complex.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
@@ -1186,42 +1321,32 @@ fn test_chained_set_operations() {
     assert_eq!(*sorted_complex[2].1, 400);
 }
 
-// Tests for AsBytes trait
 #[test]
 fn test_as_bytes_implementations() {
-    // Test AsBytes for str
     let s = "hello";
     assert_eq!(s.as_bytes(), b"hello");
 
-    // Test AsBytes for String
     let string = String::from("hello");
     assert_eq!(string.as_bytes(), b"hello");
 
-    // Test AsBytes for &str
     let s_ref: &str = "hello";
     assert_eq!(s_ref.as_bytes(), b"hello");
 
-    // Test AsBytes for &String
     let string_ref: &String = &string;
     assert_eq!(string_ref.as_bytes(), b"hello");
 
-    // Test AsBytes for [u8]
     let bytes = b"hello".as_slice();
     assert_eq!(bytes.as_bytes(), b"hello");
 
-    // Test AsBytes for Vec<u8>
     let vec_bytes = b"hello".to_vec();
     assert_eq!(vec_bytes.as_bytes(), b"hello");
 
-    // Test AsBytes for &[u8]
     let bytes_ref: &[u8] = b"hello";
     assert_eq!(bytes_ref.as_bytes(), b"hello");
 
-    // Test AsBytes for [u8; N]
     let array_bytes: [u8; 5] = *b"hello";
     assert_eq!(array_bytes.as_bytes(), b"hello");
 
-    // Test as_bytes_vec method
     assert_eq!(s.as_bytes_vec(), b"hello".to_vec());
     assert_eq!(string.as_bytes_vec(), b"hello".to_vec());
     assert_eq!(bytes.as_bytes_vec(), b"hello".to_vec());
@@ -1232,16 +1357,14 @@ fn test_as_bytes_implementations() {
 fn test_as_bytes_in_trie_operations() {
     let mut trie = TrieMap::new();
 
-    // Insert with different key types
-    trie.insert("string_key", 1); // &str
-    trie.insert(String::from("owned_key"), 2); // String
-    trie.insert(b"byte_key".as_ref(), 3); // &[u8]
-    trie.insert(b"vec_key".to_vec(), 4); // Vec<u8>
+    trie.insert("string_key", 1);
+    trie.insert(String::from("owned_key"), 2);
+    trie.insert(b"byte_key".as_ref(), 3);
+    trie.insert(b"vec_key".to_vec(), 4);
 
     let static_array: [u8; 10] = *b"array_key\0";
-    trie.insert(static_array, 5); // [u8; N]
+    trie.insert(static_array, 5);
 
-    // Access with different key types
     assert_eq!(trie.get("string_key"), Some(&1));
     assert_eq!(trie.get(String::from("string_key")), Some(&1));
     assert_eq!(trie.get(b"string_key".as_ref()), Some(&1));
@@ -1259,7 +1382,6 @@ fn test_as_bytes_in_trie_operations() {
     assert_eq!(trie.get("array_key\0"), Some(&5));
     assert_eq!(trie.get(static_array), Some(&5));
 
-    // Entry API with different key types
     trie.entry(String::from("new_key")).or_insert(10);
     assert_eq!(trie.get("new_key"), Some(&10));
 
@@ -1309,7 +1431,6 @@ fn test_iter_mut_modification_during_iteration() {
     trie.insert("b", 2);
     trie.insert("c", 3);
 
-    // Make sure we can modify values based on key content
     for (key, value) in trie.iter_mut() {
         if String::from_utf8_lossy(&key) == "b" {
             *value *= 100;
@@ -1331,7 +1452,6 @@ fn test_prefix_iterators() {
     map.insert("banana", 3);
     map.insert("app", 4);
 
-    // Test prefix_iter
     let mut iter = map.prefix_iter("app").collect::<Vec<_>>();
     iter.sort_by(|(k1, _), (k2, _)| k1.cmp(k2));
 
@@ -1343,7 +1463,6 @@ fn test_prefix_iterators() {
     assert_eq!(String::from_utf8(iter[2].0.clone()).unwrap(), "application");
     assert_eq!(*iter[2].1, 2);
 
-    // Test prefix_keys
     let mut keys = map.prefix_keys("app").collect::<Vec<_>>();
     keys.sort();
 
@@ -1352,7 +1471,6 @@ fn test_prefix_iterators() {
     assert_eq!(String::from_utf8(keys[1].clone()).unwrap(), "apple");
     assert_eq!(String::from_utf8(keys[2].clone()).unwrap(), "application");
 
-    // Test prefix_values
     let mut values = map.prefix_values("app").collect::<Vec<_>>();
     values.sort();
 
@@ -2403,10 +2521,6 @@ fn test_update_or_insert() {
     assert_eq!(trie.get("key2"), Some(&5));
 }
 
-///
-///
-
-// Test basic functionality of remove_and_prune
 #[test]
 fn test_basic_remove_and_prune() {
     let mut trie = TrieMap::new();
@@ -2414,192 +2528,151 @@ fn test_basic_remove_and_prune() {
     trie.insert("abcd", 2);
     trie.insert("abce", 3);
 
-    // Verify initial state
     assert_eq!(trie.len(), 3);
     assert_eq!(trie.get("abc"), Some(&1));
     assert_eq!(trie.get("abcd"), Some(&2));
     assert_eq!(trie.get("abce"), Some(&3));
 
-    // Remove and prune one key
     let removed = trie.remove_and_prune("abcd");
     assert_eq!(removed, Some(2));
 
-    // Verify state after removal
     assert_eq!(trie.len(), 2);
     assert_eq!(trie.get("abc"), Some(&1));
     assert_eq!(trie.get("abcd"), None);
     assert_eq!(trie.get("abce"), Some(&3));
 }
 
-// Test remove_and_prune with a path that should be completely removed
 #[test]
 fn test_remove_and_prune_exclusive_path() {
     let mut trie = TrieMap::new();
 
-    // Create a main branch and an exclusive branch
     trie.insert("common", 1);
     trie.insert("common_branch1", 2);
     trie.insert("common_branch2", 3);
-    trie.insert("exclusive", 4); // This creates a path used only by this key
+    trie.insert("exclusive", 4);
 
-    // Remove the exclusive path
     let removed = trie.remove_and_prune("exclusive");
     assert_eq!(removed, Some(4));
 
-    // The exclusive path should be gone
     assert_eq!(trie.get("exclusive"), None);
 
-    // But the common paths should remain
     assert_eq!(trie.get("common"), Some(&1));
     assert_eq!(trie.get("common_branch1"), Some(&2));
     assert_eq!(trie.get("common_branch2"), Some(&3));
 }
 
-// Test removing leaf nodes from a branch
 #[test]
 fn test_remove_and_prune_leaf_nodes() {
     let mut trie = TrieMap::new();
 
-    // Create a deep path with branches
     trie.insert("a", 1);
     trie.insert("ab", 2);
     trie.insert("abc", 3);
     trie.insert("abcd", 4);
 
-    // Remove the deepest leaf
     let removed = trie.remove_and_prune("abcd");
     assert_eq!(removed, Some(4));
 
-    // The leaf should be gone, but the branch should remain
     assert_eq!(trie.get("abcd"), None);
     assert_eq!(trie.get("abc"), Some(&3));
     assert_eq!(trie.get("ab"), Some(&2));
     assert_eq!(trie.get("a"), Some(&1));
 
-    // Now remove a middle node with no children
     let removed = trie.remove_and_prune("abc");
     assert_eq!(removed, Some(3));
 
-    // The node should be gone
     assert_eq!(trie.get("abc"), None);
 
-    // The remaining path should be intact
     assert_eq!(trie.get("ab"), Some(&2));
     assert_eq!(trie.get("a"), Some(&1));
 }
 
-// Test removing a node that requires pruning
 #[test]
 fn test_remove_and_prune_internal_nodes() {
     let mut trie = TrieMap::new();
 
-    // Create a structure with a node that has data but also children
     trie.insert("parent", 1);
     trie.insert("parent_child", 2);
 
-    // Remove the parent
     let removed = trie.remove_and_prune("parent");
     assert_eq!(removed, Some(1));
 
-    // The parent value should be gone
     assert_eq!(trie.get("parent"), None);
 
-    // But the child should remain
     assert_eq!(trie.get("parent_child"), Some(&2));
 }
 
-// Test with forked paths
 #[test]
 fn test_remove_and_prune_forked_paths() {
     let mut trie = TrieMap::new();
 
-    // Create a structure with forked paths
     trie.insert("fork", 1);
     trie.insert("fork_a", 2);
     trie.insert("fork_b", 3);
 
-    // Remove one fork
     let removed = trie.remove_and_prune("fork_a");
     assert_eq!(removed, Some(2));
 
-    // The removed fork should be gone
     assert_eq!(trie.get("fork_a"), None);
 
-    // But other paths should remain
     assert_eq!(trie.get("fork"), Some(&1));
     assert_eq!(trie.get("fork_b"), Some(&3));
 
-    // Now remove the root node
     let removed = trie.remove_and_prune("fork");
     assert_eq!(removed, Some(1));
 
-    // The root node value should be gone
     assert_eq!(trie.get("fork"), None);
 
-    // But the remaining fork should still be accessible
     assert_eq!(trie.get("fork_b"), Some(&3));
 }
 
-// Test with alternating removes
 #[test]
 fn test_remove_and_prune_alternating() {
     let mut trie = TrieMap::new();
 
-    // Create several paths
     trie.insert("path1", 1);
     trie.insert("path2", 2);
     trie.insert("path3", 3);
 
-    // Remove paths in an alternating pattern
     let removed = trie.remove_and_prune("path2");
     assert_eq!(removed, Some(2));
 
-    // Second path should be gone
     assert_eq!(trie.get("path2"), None);
 
-    // Other paths should remain
     assert_eq!(trie.get("path1"), Some(&1));
     assert_eq!(trie.get("path3"), Some(&3));
 
-    // Remove another path
     let removed = trie.remove_and_prune("path1");
     assert_eq!(removed, Some(1));
 
-    // First path should be gone
     assert_eq!(trie.get("path1"), None);
 
-    // Third path should remain
     assert_eq!(trie.get("path3"), Some(&3));
 }
 
-// Test removing nonexistent keys
 #[test]
 fn test_remove_and_prune_nonexistent() {
     let mut trie = TrieMap::new();
 
     trie.insert("existing", 1);
 
-    // Try to remove nonexistent keys
     let removed = trie.remove_and_prune("nonexistent");
     assert_eq!(removed, None);
 
-    let removed = trie.remove_and_prune("existi"); // Prefix of existing key
+    let removed = trie.remove_and_prune("existi");
     assert_eq!(removed, None);
 
-    let removed = trie.remove_and_prune("existingplus"); // Extension of existing key
+    let removed = trie.remove_and_prune("existingplus");
     assert_eq!(removed, None);
 
-    // Original data should be intact
     assert_eq!(trie.len(), 1);
     assert_eq!(trie.get("existing"), Some(&1));
 }
 
-// Test with binary keys
 #[test]
 fn test_remove_and_prune_binary_keys() {
     let mut trie = TrieMap::new();
 
-    // Create binary keys
     let common_prefix = vec![1, 2, 3];
     let key1 = vec![1, 2, 3, 4];
     let key2 = vec![1, 2, 3, 5];
@@ -2610,50 +2683,39 @@ fn test_remove_and_prune_binary_keys() {
     trie.insert(&key2, 3);
     trie.insert(&unrelated, 4);
 
-    // Remove one key
     let removed = trie.remove_and_prune(&key1);
     assert_eq!(removed, Some(2));
 
-    // The key should be gone
     assert_eq!(trie.get(&key1), None);
 
-    // Other keys should remain
     assert_eq!(trie.get(&common_prefix), Some(&1));
     assert_eq!(trie.get(&key2), Some(&3));
     assert_eq!(trie.get(&unrelated), Some(&4));
 }
 
-// Test with empty keys
 #[test]
 fn test_remove_and_prune_empty_key() {
     let mut trie = TrieMap::new();
 
-    // Insert empty key and normal key
     trie.insert("", 1);
     trie.insert("normal", 2);
 
-    // Remove empty key
     let removed = trie.remove_and_prune("");
     assert_eq!(removed, Some(1));
 
-    // Empty key should be gone
     assert_eq!(trie.get(""), None);
 
-    // Normal key should remain
     assert_eq!(trie.get("normal"), Some(&2));
 }
 
-// Test removing all keys one by one
 #[test]
 fn test_remove_and_prune_all() {
     let mut trie = TrieMap::new();
 
-    // Insert several keys
     trie.insert("key1", 1);
     trie.insert("key2", 2);
     trie.insert("key3", 3);
 
-    // Remove all keys one by one
     let removed = trie.remove_and_prune("key1");
     assert_eq!(removed, Some(1));
     assert_eq!(trie.len(), 2);
@@ -2665,28 +2727,679 @@ fn test_remove_and_prune_all() {
     let removed = trie.remove_and_prune("key3");
     assert_eq!(removed, Some(3));
 
-    // Trie should be empty
     assert_eq!(trie.len(), 0);
     assert!(trie.is_empty());
 }
 
-// Test with a deep exclusive path
 #[test]
 fn test_remove_and_prune_deep_exclusive_path() {
     let mut trie = TrieMap::new();
 
-    // Create a deep exclusive path
     let deep_key = "a".repeat(100);
     trie.insert(&deep_key, 1);
     trie.insert("other", 2);
 
-    // Remove the deep path
     let removed = trie.remove_and_prune(&deep_key);
     assert_eq!(removed, Some(1));
 
-    // The deep path should be gone
     assert_eq!(trie.get(&deep_key), None);
 
-    // The other key should remain
     assert_eq!(trie.get("other"), Some(&2));
+}
+
+use proptest::prelude::*;
+use std::collections::HashSet;
+
+// Helper strategies
+fn keys_strategy() -> impl Strategy<Value = Vec<String>> {
+    // Use hash_set to ensure unique keys
+    prop::collection::hash_set("[a-zA-Z0-9]{1,20}".prop_map(String::from), 1..100)
+        .prop_map(|set| set.into_iter().collect())
+}
+
+fn key_value_pairs_strategy() -> impl Strategy<Value = Vec<(String, i32)>> {
+    // First generate unique keys
+    prop::collection::hash_set("[a-zA-Z0-9]{1,20}".prop_map(String::from), 1..100).prop_flat_map(
+        |keys| {
+            // Then pair them with values
+            prop::collection::vec(proptest::num::i32::ANY, keys.len())
+                .prop_map(move |values| keys.iter().cloned().zip(values.into_iter()).collect())
+        },
+    )
+}
+
+proptest! {
+
+    #[test]
+    fn prop_iter_properties(pairs in key_value_pairs_strategy()) {
+        let mut trie = TrieMap::new();
+        let mut reference = HashMap::new();
+
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            reference.insert(key.clone(), *value);
+        }
+
+
+        let items: Vec<(Vec<u8>, &i32)> = trie.iter().collect();
+
+
+        prop_assert_eq!(items.len(), reference.len());
+
+
+        for (key, value) in &items {
+            let key_str = String::from_utf8(key.clone()).unwrap();
+            prop_assert_eq!(reference.get(&key_str), Some(*value));
+        }
+
+
+        let keys: HashSet<Vec<u8>> = trie.keys().map(|x| x.into()).collect();
+        prop_assert_eq!(keys.len(), reference.len());
+
+        for key_bytes in &keys {
+            let key_str = String::from_utf8(key_bytes.clone()).unwrap();
+            prop_assert!(reference.contains_key(&key_str));
+        }
+
+
+        let mut values: Vec<&i32> = trie.values().collect();
+        let mut ref_values: Vec<&i32> = reference.values().collect();
+
+        values.sort();
+        ref_values.sort();
+        prop_assert_eq!(values, ref_values);
+    }
+
+
+
+
+    #[test]
+    fn prop_drain_iterator(pairs in key_value_pairs_strategy()) {
+        let mut trie = TrieMap::new();
+        let mut reference_map = HashMap::new();
+
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            reference_map.insert(key.clone(), *value);
+        }
+
+
+        let drained_items: Vec<(Vec<u8>, i32)> = trie.drain().collect();
+
+
+        prop_assert_eq!(drained_items.len(), reference_map.len());
+
+
+        for (key, value) in &drained_items {
+            let key_str = String::from_utf8(key.clone()).unwrap();
+            prop_assert_eq!(reference_map.get(&key_str).copied(), Some(*value));
+        }
+
+
+        prop_assert_eq!(trie.len(), 0);
+        prop_assert!(trie.is_empty());
+    }
+
+
+    #[test]
+    fn prop_into_iter(pairs in key_value_pairs_strategy()) {
+        let mut trie = TrieMap::new();
+        let mut reference_map = HashMap::new();
+
+
+        for (key, value) in &pairs {
+            trie.insert(key, *value);
+            reference_map.insert(key.clone(), *value);
+        }
+
+
+        prop_assert_eq!(trie.len(), reference_map.len());
+
+
+        let items: Vec<(Vec<u8>, i32)> = trie.into_iter().collect();
+
+
+        prop_assert_eq!(items.len(), reference_map.len());
+
+
+        for (key, value) in &items {
+            let key_str = String::from_utf8(key.clone()).unwrap();
+            prop_assert_eq!(reference_map.get(&key_str).copied(), Some(*value));
+        }
+
+
+        let unique_keys: HashSet<Vec<u8>> = items.iter().map(|(k, _)| k.clone()).collect();
+        prop_assert_eq!(unique_keys.len(), items.len());
+    }
+
+
+}
+
+#[test]
+fn test_entry_or_insert_none_value() {
+    // Test inserting None where a node exists but has no value
+    let mut trie = TrieMap::new();
+
+    // Create a path without inserting a value
+    let key_bytes = "test_key".as_bytes().to_vec();
+    let mut current_id = trie.root;
+    for &byte in &key_bytes {
+        current_id = trie.pool.add_child(current_id, byte);
+    }
+
+    // Verify the path exists but has no value
+    let mut found = true;
+    let mut path_id = trie.root;
+    for &byte in &key_bytes {
+        let node = trie.pool.get_node(path_id);
+        if !test_bit(&node.is_present, byte) {
+            found = false;
+            break;
+        }
+        path_id = trie.pool.get_child_idx_unchecked(path_id, byte);
+    }
+
+    assert!(found, "Path should exist");
+    let node = trie.pool.get_node(path_id);
+    assert!(node.data_idx.is_none(), "Node should have no data index");
+
+    // Now use entry API to insert a value
+    let value = trie.entry("test_key").or_insert(42);
+    assert_eq!(*value, 42);
+
+    // Verify it was inserted correctly
+    assert_eq!(trie.get("test_key"), Some(&42));
+    assert_eq!(trie.len(), 1);
+}
+
+#[test]
+fn test_entry_or_default_edge_cases() {
+    let mut trie = TrieMap::<Option<i32>>::new();
+
+    // Test with empty string key
+    let empty_key = "";
+    let value = trie.entry(empty_key).or_default();
+    assert_eq!(*value, None);
+
+    // Test with already present None value
+    let value = trie.entry(empty_key).or_default();
+    assert_eq!(*value, None);
+
+    // Modify the value
+    *value = Some(42);
+
+    // Test again to ensure it doesn't reset
+    let value = trie.entry(empty_key).or_default();
+    assert_eq!(*value, Some(42));
+}
+
+#[test]
+fn test_entry_or_insert_with_callback_arguments() {
+    let mut trie = TrieMap::new();
+
+    // Create a stateful callback
+    struct Counter {
+        count: i32,
+    }
+
+    impl Counter {
+        fn new() -> Self {
+            Counter { count: 0 }
+        }
+
+        fn next(&mut self) -> i32 {
+            self.count += 1;
+            self.count
+        }
+    }
+
+    let mut counter = Counter::new();
+
+    // Test or_insert_with
+    for _ in 0..5 {
+        let key = "counter_key";
+        let value = trie.entry(key).or_insert_with(|| counter.next());
+
+        // If this is the first insertion, value should be 1
+        // For subsequent iterations, it should remain 1
+        assert_eq!(*value, 1);
+    }
+
+    // Counter should have been called exactly once despite 5 entry operations
+    assert_eq!(counter.count, 1);
+
+    // Test or_insert_with_key
+    let mut trie = TrieMap::new();
+    let mut lengths = HashMap::new();
+
+    for key in ["a", "ab", "abc", "abcd", "abcde"] {
+        let value = trie.entry(key).or_insert_with_key(|k| {
+            let len = k.len();
+            lengths.insert(len, true);
+            len as i32
+        });
+
+        // Value should match the key length
+        assert_eq!(*value, key.len() as i32);
+    }
+
+    // Each length callback should have been called exactly once
+    assert_eq!(lengths.len(), 5);
+
+    // Calling again for an existing key should not call the callback
+    let called = std::cell::Cell::new(false);
+    let value = trie.entry("abc").or_insert_with_key(|_| {
+        called.set(true);
+        100 // Different value
+    });
+
+    // Value should not change
+    assert_eq!(*value, 3);
+    // Callback should not be called
+    assert!(!called.get());
+}
+
+#[test]
+fn test_entry_manual_constructions() {
+    let mut trie = TrieMap::new();
+    trie.insert("key", 42);
+
+    // Manually create a VacantEntry
+    let vacant = VacantEntry {
+        trie: &mut trie,
+        key: "new_key".as_bytes().to_vec(),
+    };
+
+    // Test insert
+    let value_ref = vacant.insert(100);
+    assert_eq!(*value_ref, 100);
+    assert_eq!(trie.get("new_key"), Some(&100));
+
+    // Manually create an OccupiedEntry
+    let data_idx = {
+        let mut current_id = trie.root;
+        for &byte in "key".as_bytes() {
+            current_id = trie.pool.get_child_idx_unchecked(current_id, byte);
+        }
+        let node = trie.pool.get_node(current_id);
+        node.data_idx.unwrap()
+    };
+
+    {
+        let mut occupied = OccupiedEntry {
+            trie: &mut trie,
+            key: "key".as_bytes().to_vec(),
+            data_idx,
+        };
+
+        // Test methods
+        assert_eq!(occupied.get(), &42);
+        *occupied.get_mut() = 200;
+    }
+    assert_eq!(trie.get("key"), Some(&200));
+}
+
+#[test]
+fn test_entry_interface_with_zero_sized_types() {
+    // Test with unit type ()
+    let mut trie = TrieMap::<()>::new();
+
+    // Test or_insert
+    trie.entry("key1").or_insert(());
+    assert!(trie.contains_key("key1"));
+
+    // Test or_default
+    trie.entry("key2").or_default();
+    assert!(trie.contains_key("key2"));
+
+    // Test or_insert_with
+    trie.entry("key3").or_insert_with(|| ());
+    assert!(trie.contains_key("key3"));
+
+    // Test or_insert_with_key
+    trie.entry("key4").or_insert_with_key(|_| ());
+    assert!(trie.contains_key("key4"));
+
+    // Test and_modify
+    trie.entry("key1").and_modify(|_| {}).or_insert(());
+    assert!(trie.contains_key("key1"));
+
+    assert_eq!(trie.len(), 4);
+}
+
+#[test]
+fn test_entry_complex_modifications() {
+    let mut trie = TrieMap::<Vec<i32>>::new();
+
+    // Test inserting and modifying complex values
+    let key = "complex";
+
+    // Insert initial value
+    trie.entry(key).or_insert(vec![1, 2, 3]);
+
+    // Modify through entry API
+    match trie.entry(key) {
+        Entry::Occupied(mut occupied) => {
+            // Get mutable reference and push a value
+            occupied.get_mut().push(4);
+
+            // Verify change
+            assert_eq!(occupied.get(), &vec![1, 2, 3, 4]);
+        }
+        _ => panic!("Entry should be occupied"),
+    }
+
+    // Chain multiple operations
+    trie.entry(key)
+        .and_modify(|v| v.push(5))
+        .and_modify(|v| v.push(6))
+        .or_insert(vec![]);
+
+    // Verify final state
+    assert_eq!(trie.get(key), Some(&vec![1, 2, 3, 4, 5, 6]));
+
+    // Remove via entry
+    if let Entry::Occupied(occupied) = trie.entry(key) {
+        let removed = occupied.remove();
+        assert_eq!(removed, vec![1, 2, 3, 4, 5, 6]);
+    }
+
+    // Verify removal
+    assert!(!trie.contains_key(key));
+}
+
+#[test]
+fn test_occupied_entry_with_none_value() {
+    let mut trie = TrieMap::<Option<i32>>::new();
+
+    // Insert None value
+    trie.insert("key", None);
+
+    // Verify entry
+    if let Entry::Occupied(mut occupied) = trie.entry("key") {
+        assert_eq!(occupied.get(), &None);
+
+        // Update to Some
+        *occupied.get_mut() = Some(42);
+
+        // Verify update
+        assert_eq!(occupied.get(), &Some(42));
+    } else {
+        panic!("Entry should be occupied");
+    }
+
+    // Verify final state
+    assert_eq!(trie.get("key"), Some(&Some(42)));
+}
+
+// ----------------------------
+// Additional Iterator Tests
+// ----------------------------
+
+#[test]
+fn test_iter_borrowing_semantics() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+
+    // Test that Iter borrows the trie immutably
+    let iter = trie.iter();
+
+    // We should still be able to use get since iter only borrows immutably
+    assert_eq!(trie.get("a"), Some(&1));
+
+    // Consume the iterator
+    let _: Vec<_> = iter.collect();
+
+    // Now test with multiple iterators simultaneously
+    let iter1 = trie.iter();
+    let iter2 = trie.iter();
+
+    // Both should work independently
+    assert_eq!(iter1.count(), 2);
+    assert_eq!(iter2.count(), 2);
+}
+
+#[test]
+fn test_keys_iterator_exhaustively() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+    trie.insert("c", 3);
+
+    // Get keys iterator
+    let mut keys_iter = trie.keys();
+
+    // Collect all keys manually
+    let mut keys = Vec::new();
+    while let Some(key) = keys_iter.next() {
+        keys.push(key);
+    }
+
+    // Verify count
+    assert_eq!(keys.len(), 3);
+
+    // Verify content
+    let key_strs: Vec<String> = keys
+        .iter()
+        .map(|k| String::from_utf8(k.clone().into()).unwrap())
+        .collect();
+
+    assert!(key_strs.contains(&"a".to_string()));
+    assert!(key_strs.contains(&"b".to_string()));
+    assert!(key_strs.contains(&"c".to_string()));
+
+    // Verify size_hint
+    let keys_iter = trie.keys();
+    let (min, max) = keys_iter.size_hint();
+    assert!(min <= 3);
+}
+
+#[test]
+fn test_nested_iterators() {
+    let mut trie = TrieMap::<i32>::new();
+    trie.insert("abc", 1);
+    trie.insert("abd", 2);
+    trie.insert("abe", 3);
+
+    // Group by the second character
+    let mut result: BTreeMap<String, Vec<i32>> = BTreeMap::new();
+
+    for (key, value) in trie.iter() {
+        if key.len() >= 2 {
+            let group_key = String::from_utf8(key[0..2].to_vec()).unwrap();
+            result.entry(group_key).or_default().push(*value);
+        }
+    }
+
+    // Verify grouping
+    assert_eq!(result.len(), 1);
+    let values = result.get("ab").unwrap();
+    assert_eq!(values.len(), 3);
+    assert!(values.contains(&1));
+    assert!(values.contains(&2));
+    assert!(values.contains(&3));
+}
+
+#[test]
+fn test_nonexistent_prefix() {
+    let mut trie = TrieMap::new();
+    trie.insert("apple", 1);
+    trie.insert("banana", 2);
+
+    // Test with a prefix that doesn't exist
+    let mut prefix_iter = trie.prefix_iter("orange");
+    assert_eq!(prefix_iter.next(), None);
+
+    // Test prefix_keys
+    let prefix_keys = trie.prefix_keys("orange");
+    assert_eq!(prefix_keys.count(), 0);
+
+    // Test prefix_values
+    let prefix_values = trie.prefix_values("orange");
+    assert_eq!(prefix_values.count(), 0);
+
+    // Test with a prefix that's longer than any key
+    let long_prefix = "apple_tree";
+    assert_eq!(trie.prefix_iter(long_prefix).count(), 0);
+    assert_eq!(trie.prefix_keys(long_prefix).count(), 0);
+    assert_eq!(trie.prefix_values(long_prefix).count(), 0);
+}
+
+#[test]
+fn test_iter_with_data_idx_out_of_bounds() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+
+    // Create a node with a data_idx that's out of bounds
+    let key_bytes = "invalid".as_bytes().to_vec();
+    let mut current_id = trie.root;
+    for &byte in &key_bytes {
+        let has_child = {
+            let current_node = trie.pool.get_node(current_id);
+            test_bit(&current_node.is_present, byte)
+        };
+
+        if !has_child {
+            current_id = trie.pool.add_child(current_id, byte);
+        } else {
+            current_id = trie.pool.get_child_idx_unchecked(current_id, byte);
+        }
+    }
+
+    // Set an out-of-bounds data index
+    {
+        let node = trie.pool.get_node_mut(current_id);
+        node.data_idx = Some(usize::MAX); // This is out of bounds
+    }
+
+    // Iteration should still work and skip the invalid node
+    let items: Vec<_> = trie.iter().collect();
+    assert_eq!(items.len(), 1); // Only the valid entry
+    assert_eq!(items[0].0, b"a");
+    assert_eq!(*items[0].1, 1);
+}
+
+#[test]
+#[test]
+fn test_into_iter_edge_cases_again() {
+    // Test with empty trie
+    let empty_trie: TrieMap<i32> = TrieMap::new();
+    let empty_iter = empty_trie.into_iter();
+    assert_eq!(empty_iter.count(), 0);
+
+    // Test with invalid data indices
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+
+    // Create another key with invalid data
+    let key_bytes = "invalid".as_bytes().to_vec();
+    let mut current_id = trie.root;
+    for &byte in &key_bytes {
+        let has_child = {
+            let current_node = trie.pool.get_node(current_id);
+            test_bit(&current_node.is_present, byte)
+        };
+
+        if !has_child {
+            current_id = trie.pool.add_child(current_id, byte);
+        } else {
+            current_id = trie.pool.get_child_idx_unchecked(current_id, byte);
+        }
+    }
+
+    // Set an invalid data index (beyond the Vec bounds)
+    {
+        let node = trie.pool.get_node_mut(current_id);
+        node.data_idx = Some(trie.data.len() + 100); // This is out of bounds
+    }
+
+    // IntoIter should skip the invalid entry
+    let items: Vec<_> = trie.into_iter().collect();
+    assert_eq!(items.len(), 1); // Only the valid entry
+}
+
+#[test]
+fn test_drain_iter_with_deep_paths() {
+    let mut trie = TrieMap::new();
+
+    // Insert items with varying path lengths
+    trie.insert("a", 1);
+    trie.insert("ab", 2);
+    trie.insert("abc", 3);
+    trie.insert("abcd", 4);
+    trie.insert("abcde", 5);
+
+    // Drain and verify all items are included
+    let drained: Vec<_> = trie.drain().collect();
+    assert_eq!(drained.len(), 5);
+
+    // Sort by key length to verify all depths are included
+    let mut by_length: HashMap<usize, Vec<(Vec<u8>, i32)>> = HashMap::new();
+    for (key, value) in drained {
+        by_length.entry(key.len()).or_default().push((key, value));
+    }
+
+    // Verify all depths
+    for i in 1..=5 {
+        assert!(by_length.contains_key(&i));
+        assert_eq!(by_length[&i].len(), 1);
+    }
+
+    // Trie should be empty
+    assert_eq!(trie.len(), 0);
+}
+
+#[test]
+fn test_specialized_iterators_size_hint() {
+    let mut trie = TrieMap::new();
+
+    // Insert test data
+    for i in 0..10 {
+        trie.insert(format!("key{}", i), i);
+    }
+
+    // Test Keys size_hint
+    let keys_iter = Keys { inner: trie.iter() };
+    let (min, max) = keys_iter.size_hint();
+    assert!(min <= trie.len());
+
+    // Test Values size_hint
+    let values_iter = Values { inner: trie.iter() };
+    let (min, max) = values_iter.size_hint();
+    assert!(min <= trie.len());
+
+    // Test PrefixKeys size_hint
+    let prefix_iter = trie.prefix_iter("key");
+    let prefix_keys_iter = PrefixKeys { inner: prefix_iter };
+    let (min, max) = prefix_keys_iter.size_hint();
+    assert_eq!(min, 0); // Conservative estimate
+    assert!(max.unwrap() >= trie.len());
+
+    // Test PrefixValues size_hint
+    let prefix_iter = trie.prefix_iter("key");
+    let prefix_values_iter = PrefixValues { inner: prefix_iter };
+    let (min, max) = prefix_values_iter.size_hint();
+    assert_eq!(min, 0); // Conservative estimate
+    assert!(max.unwrap() >= trie.len());
+}
+
+#[test]
+fn test_empty_prefix_matches_all() {
+    let mut trie = TrieMap::new();
+    trie.insert("a", 1);
+    trie.insert("b", 2);
+    trie.insert("c", 3);
+
+    // Empty prefix should match everything
+    let prefix_iter = trie.prefix_iter("");
+    assert_eq!(prefix_iter.count(), 3);
+
+    let prefix_keys = trie.prefix_keys("");
+    assert_eq!(prefix_keys.count(), 3);
+
+    let prefix_values = trie.prefix_values("");
+    assert_eq!(prefix_values.count(), 3);
 }
